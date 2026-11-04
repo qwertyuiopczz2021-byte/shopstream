@@ -14,7 +14,7 @@ so that the written report can be assembled from it without reconstructing histo
 | System | ShopStream — distributed e-commerce platform |
 | Deadline (code + report) | Friday, 4 December 2026 |
 | Presentation | Wednesday, 9 December 2026, 15 minutes |
-| Stack | Java 21, Spring Boot 3.3.4, MySQL 8.4, Docker Compose |
+| Stack | Java 21, Spring Boot 3.3.4, MySQL 8.4, Kafka 3.6 (KRaft), Docker Compose |
 
 ---
 
@@ -103,12 +103,113 @@ not have to be retrofitted.
 
 ---
 
-## 4. Roadmap
+## 4. Step 2 — Kafka
+
+### 4.1 Architecture
+
+```
+   order-service                    product-service
+   ┌────────────┐   OrderPlaced    ┌──────────────────┐
+   │ POST       │ ───order-events─>│ InventoryService │
+   │ /orders    │                  │ reserve()        │
+   │ PENDING    │<─inventory-events─│ one transaction  │
+   └────────────┘   StockReserved  └──────────────────┘
+        │           StockRejected           
+        │                 │
+        └─────┬───────────┘
+              ▼
+      notification-service  →  one "e-mail" per finished order
+```
+
+Single broker in KRaft mode (`confluentinc/cp-kafka:7.6.1`), three topics with three partitions each.
+
+### 4.2 Decisions and rationale
+
+**KRaft, not ZooKeeper.** Kafka 3.x can run without ZooKeeper: the broker also takes the controller
+role and the cluster metadata lives in the Kafka log itself. The course only asks for "a Kafka broker";
+adding a second container that exists purely to elect the first would be one more thing to start, to
+health-check and to explain. One container, one `CLUSTER_ID`, done.
+
+**The event contract is a duplicated package, not a shared library.** Every service carries its own
+copy of `hu.unimiskolc.shopstream.events`. A shared jar would couple the build of three services and
+turn "deploy product-service alone" into a version-negotiation problem. The copies are safe because
+the class names are identical, and identical class names are exactly what the JSON type header needs:
+Spring Kafka's `JsonSerializer` writes `__TypeId__` = the fully qualified class name into the record
+headers, and the consumer resolves that name against its own classpath.
+
+**JSON with type headers, and a trusted-package allow-list.** JSON makes the messages readable in
+`kafka-console-consumer` during the demo, which is worth more than the compactness of Avro. The
+`spring.json.trusted.packages` setting is not cosmetic: a deserializer that instantiates whatever class
+name a record header names is a remote-code-instantiation hole, so only our own event package is
+allowed.
+
+**Key = `orderId`.** Kafka only guarantees order *within a partition*. Both order topics are keyed by
+`orderId`, so all events of one order land on the same partition and are consumed in the order they
+were produced — which is what makes "Placed before Reserved" a guarantee instead of a hope. Three
+partitions give parallelism across orders; the key gives serialisation within an order.
+
+**Explicit topics, auto-creation off.** `KafkaTopicConfig` declares the topics with `TopicBuilder`
+(3 partitions, replication factor 1) and the broker runs with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`.
+If auto-creation were on, the first producer to touch a mistyped topic name would silently create it
+with the broker default of one partition, and the mistake would only appear under load.
+
+**Publish after commit, not inside the transaction.** `order-service` publishes `OrderPlaced` from a
+`@TransactionalEventListener(phase = AFTER_COMMIT)`. Sending inside the transaction is faster but can
+announce an order whose insert is later rolled back — the events and the database would disagree, with
+no way to detect it. Same reasoning on the product side: `reserve()` returns only after its
+transaction commits, and the listener publishes the result afterwards.
+
+**Idempotent stock reservation.** Kafka is at-least-once, so the same `OrderPlaced` *will* arrive twice
+sooner or later (restart, rebalance, retry). `processed_orders` stores one row per handled order, and
+`reserve()` short-circuits on a known `orderId`, returning the original outcome. The check, the stock
+decrement and the row insert happen in one transaction, so a crash mid-way rolls all three back and the
+redelivered message starts from a clean state.
+
+**HTTP for prices, Kafka for stock.** Two different questions, two different mechanisms. The price is
+needed *now*, to answer the client and to freeze the amount in the order — a request that must fail
+loudly if product-service is down. The stock reservation is a decision that can be made a second later,
+and making it asynchronous is what removes the distributed transaction: order-service never needs to
+know whether stock exists, it only reacts to the answer.
+
+**notification-service keeps its state in memory.** It needs no database: it buffers the last
+`OrderPlaced` per order and sends one mail per terminal inventory event, deduplicated in a set. A
+persistent store would be the correct choice if a mail could be lost on restart; for a simulated mail
+that writes a log line, it would be ceremony.
+
+**Consumer groups per service.** `product-service`, `order-service` and `notification-service` each use
+their own group id, so each sees every event (broadcast between services) while a second instance of the
+same service would split the partitions with the first (load balancing inside a service).
+
+### 4.3 Problems encountered
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `__TypeId__` not found on the consumer | event classes in different packages per service | one shared package name, duplicated verbatim into each service |
+| No JDK to compile locally | host has none | same multi-stage Docker build; the Kafka changes are compiled inside the image |
+| `KafkaTemplate` injection ambiguity | `KafkaTemplate<Object,Object>` vs the auto-configured `KafkaTemplate<?,?>` | inject `KafkaTemplate<Object, Object>`; the wildcard bean matches by raw type |
+| MySQL dialect warning (HHH90000025) | explicit `hibernate.dialect` in `application.yml` | removed; Hibernate detects the dialect from the connection |
+| `notification-service` crashed on startup | `spring-kafka` does not bring `jackson-databind`, and `JsonDeserializer` needs it (`NoClassDefFoundError: com/fasterxml/jackson/databind/JavaType`) | added `spring-boot-starter-json` to its pom |
+| console-producer replay rejected the line | with `parse.headers=true` the headers are separated from key and value by a **tab**, not by `\|` | built the line with tab characters |
+| inventory event can arrive before the order event | two topics, consumed by two independent consumers | bounded 2 s wait for the matching `OrderPlaced` in notification-service |
+
+### 4.4 Verification (observed, not assumed)
+
+| Check | Result |
+|---|---|
+| topic layout | `kafka-topics --describe`: `order-events`, `inventory-events`, `product-events`, `PartitionCount: 3`, `ReplicationFactor: 1` |
+| order 2: 2 x product 3 (stock 3) | POST → `PENDING`; 5 s later `CONFIRMED`; stock 3 → 1 |
+| order 3: 5 x product 3 (stock 1) | POST → `PENDING`; 5 s later `REJECTED`, reason `Insufficient stock for product 3: requested 5, available 1` |
+| order 4: 2 x product 4 (stock 5) | `CONFIRMED`; notification-service logged the simulated e-mail for order #4 |
+| replay of the same `OrderPlaced` for order 4 | stock stayed 3; log: `Order 4 was already processed as STOCK_RESERVED - stock untouched (idempotent delivery)` |
+
+---
+
+## 5. Roadmap
 
 | Step | Topic | Status |
 |---|---|---|
 | 1 | Docker: product-service, order-service, two MySQL databases | done |
-| 2 | Kafka (KRaft): order-events, inventory-events, product-events; saga + idempotent stock | planned |
+| 2 | Kafka (KRaft): order-events, inventory-events, product-events; saga + idempotent stock | done |
 | 3 | Elasticsearch: search-service, `products` index, full-text + filters | planned |
 | 4 | Redis: cart-service, `@RedisHash`, TTL, checkout; product cache | planned |
 | 5 | Spring Cloud: Eureka, Config Server, OpenFeign, Gateway, X-Request-Id | planned |
