@@ -1,0 +1,74 @@
+name: shopstream
+
+services:
+
+  mysql-product:
+    image: mysql:8.4
+    container_name: shopstream-mysql-product
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${PRODUCT_DB_NAME}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - product-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  mysql-order:
+    image: mysql:8.4
+    container_name: shopstream-mysql-order
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${ORDER_DB_NAME}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - order-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  product-service:
+    build: ./product-service
+    image: shopstream/product-service:1.0
+    container_name: shopstream-product-service
+    environment:
+      DB_URL: jdbc:mysql://mysql-product:3306/${PRODUCT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      SERVER_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql-product:
+        condition: service_healthy
+
+  order-service:
+    build: ./order-service
+    image: shopstream/order-service:1.0
+    container_name: shopstream-order-service
+    environment:
+      DB_URL: jdbc:mysql://mysql-order:3306/${ORDER_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      PRODUCT_SERVICE_URL: http://product-service:8080
+      SERVER_PORT: 8080
+    ports:
+      - "8081:8080"
+    depends_on:
+      mysql-order:
+        condition: service_healthy
+      product-service:
+        condition: service_started
+
+volumes:
+  product-db-data:
+  order-db-data:

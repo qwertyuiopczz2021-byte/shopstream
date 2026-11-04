@@ -1,0 +1,27 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: order-service
+  datasource:
+    url: ${DB_URL:jdbc:mysql://mysql-order:3306/orders?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${DB_USER:shop}
+    password: ${DB_PASSWORD:shoppw}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+
+product:
+  service:
+    url: ${PRODUCT_SERVICE_URL:http://product-service:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
