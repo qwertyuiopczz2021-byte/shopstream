@@ -75,15 +75,23 @@ client ──POST /orders──> order-service
 
 ### Topics
 
-| Topic | Key | Partitions | Produced by | Consumed by |
-|---|---|---|---|---|
-| `order-events` | orderId | 3 | order-service | product-service, notification-service |
-| `inventory-events` | orderId | 3 | product-service | order-service, notification-service |
-| `product-events` | productId | 3 | product-service | search-service (Step 3) |
+| Topic | Key | Partitions | Events | Produced by | Consumed by |
+|---|---|---|---|---|---|
+| `order-events` | orderId | 3 | `OrderPlaced`, `OrderConfirmed`, `OrderRejected` | order-service | product-service, notification-service |
+| `inventory-events` | orderId | 3 | `StockReserved`, `StockRejected` | product-service | order-service, notification-service |
+| `product-events` | productId | 3 | `ProductCreated`, `ProductUpdated`, `ProductDeleted` | product-service | search-service (Step 3) |
 
 The topics are declared in code (`KafkaTopicConfig` with `TopicBuilder`) and the broker runs with
 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`, so the partition count is always the one we chose rather than
 the broker default of one.
+
+One topic carries three record types, so the topic name alone does not say what a consumer was given:
+the JSON `__TypeId__` header decides which of the three records the deserializer builds, and every
+listener switches on the value it receives. product-service acts on `OrderPlaced` and ignores the two
+answers that it produced itself; notification-service remembers `OrderPlaced` and writes the e-mail
+when `OrderConfirmed` or `OrderRejected` arrives. All three events of one order share the order id as
+key, so they land on the same partition and are consumed in the order they happened — the mail always
+knows the content of the order before its status.
 
 ## product-service — /products
 
@@ -187,11 +195,9 @@ shows up as an inventory that does not match reality.
 2. otherwise check every line, reject the whole order if any product is unknown or short on stock;
 3. decrement the stock, insert the `processed_orders` row, commit, and only then publish the result.
 
-Try it yourself — send the same event twice and watch the stock move once:
-
-```bash
-docker compose exec kafka kafka-console-producer --bootstrap-server localhost:9092 --topic order-events
-```
+Replaying an event by hand needs the `__TypeId__` header as well: a plain JSON line sent without it
+gives the consumer no class to deserialize into. The replay that proved this behaviour is recorded in
+`NOTES.md`, section 4.4.
 
 ## Configuration
 
@@ -214,7 +220,7 @@ The compose file itself reads `.env` (`MYSQL_ROOT_PASSWORD`, `MYSQL_USER`, `MYSQ
 
 ```
 shopstream/
-├── compose.yaml
+├── docker-compose.yml
 ├── .env.example
 ├── product-service/      product CRUD + stock reservation
 ├── order-service/        orders + saga state machine

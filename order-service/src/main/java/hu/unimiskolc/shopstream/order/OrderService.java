@@ -1,7 +1,9 @@
 package hu.unimiskolc.shopstream.order;
 
 import hu.unimiskolc.shopstream.events.InventoryEvent;
+import hu.unimiskolc.shopstream.events.OrderConfirmed;
 import hu.unimiskolc.shopstream.events.OrderPlaced;
+import hu.unimiskolc.shopstream.events.OrderRejected;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -66,8 +68,9 @@ public class OrderService {
     }
 
     /**
-     * Applies the outcome published by product-service. Safe to call twice with the
-     * same event: an order that already reached a final state keeps it.
+     * Applies the outcome published by product-service and announces the new state
+     * on order-events. Safe to call twice with the same event: an order that has
+     * already reached a final state keeps it and publishes nothing again.
      */
     @Transactional
     public void applyInventoryResult(InventoryEvent event) {
@@ -80,9 +83,16 @@ public class OrderService {
             log.info("Order {} is already {} - duplicate InventoryEvent ignored", order.getId(), order.getStatus());
             return;
         }
+
         order.setStatus(event.isReserved() ? OrderStatus.CONFIRMED : OrderStatus.REJECTED);
         repository.save(order);
         log.info("Order {} -> {}{}", order.getId(), order.getStatus(),
                 event.reason() == null ? "" : " (" + event.reason() + ")");
+
+        if (event.isReserved()) {
+            events.publishEvent(OrderConfirmed.now(order.getId(), order.getTotalPrice()));
+        } else {
+            events.publishEvent(OrderRejected.now(order.getId(), event.reason()));
+        }
     }
 }

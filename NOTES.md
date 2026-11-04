@@ -14,7 +14,7 @@ so that the written report can be assembled from it without reconstructing histo
 | System | ShopStream — distributed e-commerce platform |
 | Deadline (code + report) | Friday, 4 December 2026 |
 | Presentation | Wednesday, 9 December 2026, 15 minutes |
-| Stack | Java 21, Spring Boot 3.3.4, MySQL 8.4, Kafka 3.6 (KRaft), Docker Compose |
+| Stack | Java 21, Spring Boot 3.3.4, MySQL 8.4, Kafka 3.7 (`cp-kafka` 7.6.1, KRaft), Docker Compose |
 
 ---
 
@@ -171,8 +171,22 @@ loudly if product-service is down. The stock reservation is a decision that can 
 and making it asynchronous is what removes the distributed transaction: order-service never needs to
 know whether stock exists, it only reacts to the answer.
 
+**One topic, three record types, dispatched on the payload.** The brief puts `OrderPlaced`,
+`OrderConfirmed` and `OrderRejected` on the same topic, so a listener cannot rely on the topic to tell
+it what arrived. The JSON type header decides which record the deserializer builds, and each listener
+dispatches on the value: product-service acts on `OrderPlaced` and ignores the two answers it produced
+itself, notification-service records `OrderPlaced` and mails on the terminal events. The alternative —
+three topics — would contradict the event table in the brief and triple the topic count.
+
+**The e-mail is triggered by the order event, not by the stock event.** Both `OrderPlaced` and the
+terminal `OrderConfirmed`/`OrderRejected` carry the order id as key, so they arrive on one partition,
+in order, on one consumer: the content of the order is always known before its status. Reading the
+status from `inventory-events` instead would have needed a wait for the other topic to catch up
+(the first version did exactly that, with a 2-second timeout) — ordering within a topic is a
+guarantee, ordering across two topics is not.
+
 **notification-service keeps its state in memory.** It needs no database: it buffers the last
-`OrderPlaced` per order and sends one mail per terminal inventory event, deduplicated in a set. A
+`OrderPlaced` per order and sends one mail per terminal *order* event, deduplicated in a set. A
 persistent store would be the correct choice if a mail could be lost on restart; for a simulated mail
 that writes a log line, it would be ceremony.
 
@@ -190,17 +204,23 @@ same service would split the partitions with the first (load balancing inside a 
 | MySQL dialect warning (HHH90000025) | explicit `hibernate.dialect` in `application.yml` | removed; Hibernate detects the dialect from the connection |
 | `notification-service` crashed on startup | `spring-kafka` does not bring `jackson-databind`, and `JsonDeserializer` needs it (`NoClassDefFoundError: com/fasterxml/jackson/databind/JavaType`) | added `spring-boot-starter-json` to its pom |
 | console-producer replay rejected the line | with `parse.headers=true` the headers are separated from key and value by a **tab**, not by `\|` | built the line with tab characters |
-| inventory event can arrive before the order event | two topics, consumed by two independent consumers | bounded 2 s wait for the matching `OrderPlaced` in notification-service |
+| `order-events` only ever carried `OrderPlaced` | the saga set the status in its own database but announced nothing, so the event table in the brief was only half implemented | added `OrderConfirmed` and `OrderRejected` and one `OrderEventsPublisher` that sends all three after commit |
+| listener with an `Object` parameter matched nothing | Spring Kafka hands the whole `ConsumerRecord` to a parameter typed `Object`, so `instanceof OrderPlaced` was always false: no error, offset committed, order silently stuck in `PENDING` | the listeners take `ConsumerRecord<String, Object>` and inspect `value()` |
 
 ### 4.4 Verification (observed, not assumed)
 
+Run after `docker compose down -v` and `docker compose up --build`, so every line below comes from an
+empty database and an empty Kafka log.
+
 | Check | Result |
 |---|---|
+| start from nothing | six containers up, databases empty, topics created by `KafkaTopicConfig` |
 | topic layout | `kafka-topics --describe`: `order-events`, `inventory-events`, `product-events`, `PartitionCount: 3`, `ReplicationFactor: 1` |
-| order 2: 2 x product 3 (stock 3) | POST → `PENDING`; 5 s later `CONFIRMED`; stock 3 → 1 |
-| order 3: 5 x product 3 (stock 1) | POST → `PENDING`; 5 s later `REJECTED`, reason `Insufficient stock for product 3: requested 5, available 1` |
-| order 4: 2 x product 4 (stock 5) | `CONFIRMED`; notification-service logged the simulated e-mail for order #4 |
-| replay of the same `OrderPlaced` for order 4 | stock stayed 3; log: `Order 4 was already processed as STOCK_RESERVED - stock untouched (idempotent delivery)` |
+| order 1: 2 x product 1 (stock 5, 89.90) | POST → `PENDING`, `totalPrice 179.80`; then `CONFIRMED`; stock 5 → 3 |
+| order 2: 5 x product 2 (stock 2, 79.90) | POST → `PENDING`, `totalPrice 399.50`; then `REJECTED`, reason `Insufficient stock for product 2: requested 5, available 2`; stock unchanged |
+| order-events content | `OrderPlaced` + `OrderConfirmed` for order 1, `OrderPlaced` + `OrderRejected` for order 2, each with its `__TypeId__` header |
+| notification-service | two mails: order #1 confirmed with total and items, order #2 rejected with the reason |
+| replay of the same `OrderPlaced` (earlier run, order 4) | stock unchanged; log: `Order 4 was already processed as STOCK_RESERVED - stock untouched (idempotent delivery)` |
 
 ---
 
