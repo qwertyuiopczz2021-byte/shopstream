@@ -69,6 +69,30 @@ services:
       retries: 12
       start_period: 20s
 
+  # One Elasticsearch node, used only by search-service. Security is switched
+  # off because the node is not reachable from outside the compose network, and
+  # the heap is capped so the JVM does not try to take all the machine memory.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: shopstream-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
   product-service:
     build: ./product-service
     image: shopstream/product-service:1.0
@@ -118,7 +142,24 @@ services:
       kafka:
         condition: service_healthy
 
+  search-service:
+    build: ./search-service
+    image: shopstream/search-service:1.0
+    container_name: shopstream-search-service
+    environment:
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SERVER_PORT: 8080
+    ports:
+      - "8082:8080"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   product-db-data:
   order-db-data:
   kafka-data:
+  es-data:
