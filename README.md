@@ -2,9 +2,10 @@
 
 Distributed e-commerce platform for the *Development of Distributed Web Applications* semester project.
 
-**Current state: Step 3 — Elasticsearch.** Four Spring Boot services, one KRaft Kafka broker and one
-Elasticsearch node. Orders are confirmed or rejected asynchronously through events, stock is decremented
-exactly once, and the catalogue is searchable with full-text queries and filters.
+**Current state: Step 4 — Redis.** Five Spring Boot services, one KRaft Kafka broker, one Elasticsearch
+node and one Redis. Orders are confirmed or rejected asynchronously through events, stock is decremented
+exactly once, the catalogue is searchable with full-text queries and filters, carts live in Redis with a
+TTL and are only emptied when the order they produce is confirmed, and the hot product reads are cached.
 
 ## Services
 
@@ -12,9 +13,11 @@ exactly once, and the catalogue is searchable with full-text queries and filters
 |---|---|---|---|---|
 | product-service | 8080 | 8080 | `products` (mysql-product) | product CRUD, reserves stock |
 | order-service   | 8081 | 8080 | `orders` (mysql-order)     | places orders, tracks their state |
+| cart-service | 8083 | 8080 | none (cart lives in redis) | carts per user, checkout into an order |
 | notification-service | — | — | none | writes one simulated e-mail per finished order |
 | search-service | 8082 | 8080 | none (index lives in elasticsearch) | full-text product search, filters, pagination |
 | elasticsearch | — | 9200 | — | single node, `products` index |
+| redis | — | 6379 | — | carts (with TTL) and the product read cache, password protected |
 | kafka | 29092 | 9092 | — | single broker, KRaft mode (no ZooKeeper) |
 
 ## Run
@@ -32,6 +35,7 @@ Check that it is up:
 curl http://localhost:8080/actuator/health
 curl http://localhost:8081/actuator/health
 curl http://localhost:8082/actuator/health
+curl http://localhost:8083/actuator/health
 ```
 
 Stop (keep the data):
@@ -40,7 +44,7 @@ Stop (keep the data):
 docker compose down
 ```
 
-Stop and wipe the databases and the Kafka log:
+Stop and wipe the databases, the Kafka log and the carts:
 
 ```bash
 docker compose down -v
@@ -194,6 +198,94 @@ Response of the POST (the GET looks the same, but with the settled status):
 }
 ```
 
+## cart-service — /carts/{userId}
+
+A cart is one Redis hash at `carts:{userId}` (`@RedisHash("carts")` + `CrudRepository`, so the key is
+derived from the user id, not from a database sequence). Prices are **not** stored in the cart: they are
+resolved by order-service when the cart is checked out, exactly as for a directly posted order.
+
+```bash
+# read (an unknown user is an empty cart, not a 404)
+curl http://localhost:8083/carts/alice
+
+# add 2 x product 4 (adding the same product again increases the quantity)
+curl -X POST http://localhost:8083/carts/alice/items -H "Content-Type: application/json" -d '{"productId": 4, "quantity": 2}'
+
+# set an absolute quantity
+curl -X PUT http://localhost:8083/carts/alice/items/4 -H "Content-Type: application/json" -d '{"quantity": 5}'
+
+# remove one line, or empty the whole cart
+curl -X DELETE http://localhost:8083/carts/alice/items/4
+curl -X DELETE http://localhost:8083/carts/alice
+
+# turn the cart into an order
+curl -X POST http://localhost:8083/carts/alice/checkout
+```
+
+```json
+{ "userId": "alice", "items": [ { "productId": 4, "quantity": 2 } ], "totalQuantity": 2 }
+```
+
+### Expiry
+
+`Cart` carries `@TimeToLive(unit = SECONDS)`, so every write also writes the TTL of the hash:
+
+> **A cart expires 7 days after the last modification** (`Cart.TTL_SECONDS = 7 * 24 * 60 * 60`).
+> Adding, changing or removing an item resets the clock, because a live cart is not an abandoned one.
+
+```bash
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning TTL carts:alice
+# 604800  (and after a week of silence the key is simply gone)
+```
+
+The values are stored as JSON, not as Java serialization, so the content of a cart can be read by hand:
+
+```bash
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning HGETALL carts:alice
+```
+
+Redis runs with AOF on a named volume, so a restart of the container keeps the carts (and their TTLs);
+`docker compose down -v` is what really throws them away.
+
+### Checkout never loses a cart
+
+`POST /carts/{userId}/checkout` posts the items to order-service and then waits for the order to leave
+`PENDING` (up to `CHECKOUT_TIMEOUT_MS`, polling every `CHECKOUT_POLL_INTERVAL_MS`):
+
+```json
+{ "orderId": 4, "orderStatus": "CONFIRMED", "cartCleared": true, "message": "Order accepted, cart cleared." }
+```
+
+**The cart is deleted only after a `CONFIRMED`.** A `REJECTED` order keeps the cart untouched
+(`cartCleared: false`) together with its 502/200 answer, so the customer can fix the quantity and try
+again instead of losing the basket to an out-of-stock product. A cart that is still empty after the
+timeout is also kept.
+
+## Caching in product-service
+
+`GET /products/{id}` is `@Cacheable("products")` through Redis (10 minute TTL, JSON values, nulls never
+cached), because it is read far more often than written — order pricing and cart checkout hit it on every
+request.
+
+The cache is evicted `@CacheEvict` on every path that can change what the endpoint returns:
+
+| Change | Where |
+|---|---|
+| `PUT /products/{id}` | `ProductController.update` |
+| `DELETE /products/{id}` | `ProductController.delete` |
+| stock reserved by an order | `OrderEventListener` via `ProductCache.evict` |
+
+The eviction from the Kafka listener goes through a small `ProductCache` bean instead of a call inside
+`OrderEventListener`: Spring's cache annotations are applied by a proxy, so a call from one method of a
+class to another method of the same class would silently skip them.
+
+```bash
+curl http://localhost:8080/products/4
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning KEYS 'products*'
+# products::4      (TTL 600)
+curl -X PUT http://localhost:8080/products/4 ...   # the key disappears
+```
+
 ## Watching the events
 
 ```bash
@@ -251,12 +343,16 @@ service-to-service URLs use the compose service names.
 | `DB_USER` | product-service, order-service | `${MYSQL_USER}` |
 | `DB_PASSWORD` | product-service, order-service | `${MYSQL_PASSWORD}` |
 | `PRODUCT_SERVICE_URL` | order-service | `http://product-service:8080` |
+| `ORDER_SERVICE_URL` | cart-service | `http://order-service:8080` |
+| `REDIS_HOST` / `REDIS_PORT` | product-service, cart-service | `redis` / `6379` |
+| `REDIS_PASSWORD` | product-service, cart-service, redis | `${REDIS_PASSWORD}` from `.env` |
+| `CHECKOUT_TIMEOUT_MS` / `CHECKOUT_POLL_INTERVAL_MS` | cart-service | `5000` / `250` |
 | `KAFKA_BOOTSTRAP_SERVERS` | all three services | `kafka:9092` |
 | `ELASTICSEARCH_URIS` | search-service | `http://elasticsearch:9200` |
-| `SERVER_PORT` | product-service, order-service, search-service | `8080` |
+| `SERVER_PORT` | product-service, order-service, search-service, cart-service | `8080` |
 
 The compose file itself reads `.env` (`MYSQL_ROOT_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD`,
-`PRODUCT_DB_NAME`, `ORDER_DB_NAME`). `.env` is git-ignored; `.env.example` is the template.
+`PRODUCT_DB_NAME`, `ORDER_DB_NAME`, `REDIS_PASSWORD`). `.env` is git-ignored; `.env.example` is the template.
 
 ## Layout
 
@@ -266,6 +362,7 @@ shopstream/
 ├── .env.example
 ├── product-service/      product CRUD + stock reservation
 ├── order-service/        orders + saga state machine
+├── cart-service/         carts in Redis, checkout into an order
 ├── notification-service/ simulated e-mails
 ├── search-service/       product index + /search
 └── events/               (per service) the shared event contract package
@@ -281,5 +378,5 @@ is the *class name*, so the class has to exist under the same name on the consum
 - [x] Step 1 — Docker: two services, two MySQL databases, one `docker compose up`
 - [x] Step 2 — Kafka: order-events / inventory-events / product-events, async confirmation
 - [x] Step 3 — Elasticsearch: search-service, `products` index, full-text + filters
-- [ ] Step 4 — Redis: cart-service, product cache
+- [x] Step 4 — Redis: cart-service with TTL, product cache
 - [ ] Step 5 — Spring Cloud: Eureka, config server, Feign, gateway

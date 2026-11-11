@@ -308,12 +308,107 @@ product-service (which would put a synchronous dependency in the read path).
 
 ---
 
-## 6. Roadmap
+## 6. Step 4 — Redis
+
+### 6.1 Where Redis sits
+
+```
+client ──> cart-service ──(hash carts:{userId})──> redis
+               │  POST /orders (same call order-service already had)
+               ▼
+          order-service ──(events)──> product-service ──> kafka
+               ▲                          │
+               └──────── inventory-events┘
+
+          product-service ──(GET /products/{id} cache)──> redis
+```
+
+Two unrelated uses of the same server: carts (the source of truth for one aggregate) and the product
+read cache (a copy of MySQL that may be thrown away at any moment). They share a container, not a
+lifetime.
+
+### 6.2 Design decisions
+
+**The cart's key is the user id.** `@RedisHash("carts")` + `@Id String userId` makes the repository key
+`carts:{userId}`: `CrudRepository<Cart, String>` becomes sum/count style CRUD on a hash, and no
+sequence, no `cart_id`, no lookup by user. Cart data is owned by cart-service, and MySQL is not involved
+at all — the requirement is that each service owns its storage, not that every service owns a MySQL.
+
+**The TTL is part of the model, not a cron job.** `@TimeToLive` on a `Long` field is written by Spring
+Data Redis as `EXPIRE` on the hash, so Redis itself forgets the cart; there is no sweeper service and no
+`deleted_at` column. Seven days is the number in `Cart.TTL_SECONDS` and in the README: long enough for a
+customer to come back, short enough that abandoned carts do not accumulate forever. Every `save` rewrites
+the TTL, so the clock measures inactivity.
+
+**JSON in the hash.** The default `RedisTemplate` serializes with JDK serialization, which turns the hash
+into binary that neither `redis-cli` nor a reviewer can read. cart-service declares its own
+`RedisTemplate<String, Object>` — `StringRedisSerializer` for keys, `GenericJackson2JsonRedisSerializer`
+for values — and a `redis-cli HGETALL carts:alice` is readable JSON.
+
+**The cart stores no prices.** A price belongs to product-service; copying it into the cart would freeze a
+stale number and would make cart-service depend on product-service's schema. Checkout sends only
+`productId` + `quantity`, and order-service resolves the prices exactly as it does for a direct
+`POST /orders` — one pricing path, not two.
+
+**Checkout is a bounded wait, not a synchronous order.** `POST /orders` answers `PENDING` by design
+(Step 2); the cart must be cleared only if the order is *accepted*. Making order-service block would undo
+the asynchronous design, so cart-service polls `GET /orders/{id}` until the state is terminal or
+`CHECKOUT_TIMEOUT_MS` (5 s) runs out. Three outcomes, and the cart is only deleted in the first:
+
+| Order outcome | Cart | Answer |
+|---|---|---|
+| `CONFIRMED` | deleted | `cartCleared: true` |
+| `REJECTED` | kept untouched | `cartCleared: false` + reason |
+| still `PENDING` after 5 s | kept untouched | `cartCleared: false`, status reported |
+
+Keeping the cart on rejection is the point: an out-of-stock line must not cost the customer the basket.
+The trade-off is that a checkout that times out may still be confirmed a moment later, leaving a cart
+whose order exists — acceptable for a demo, and it fails in the direction of "customer keeps their data".
+
+**Eviction from the listener needed its own bean.** `OrderEventListener` evicts after `StockReserved`,
+but Spring applies `@CacheEvict` through a proxy; calling an annotated method from another method of the
+same object bypasses the proxy and evicts nothing. `ProductCache` is therefore a separate `@Component`
+that the listener is given by the constructor. The cache TTL (10 minutes) is only a safety net for
+whatever a bug might leave behind — correctness relies on the evictions.
+
+**Redis has a password and a volume.** With `REDIS_PASSWORD` empty by default, the container would accept
+unauthenticated writes from anything on the compose network; the password is in `.env` and both clients
+pass it as `spring.data.redis.password`. AOF on a named volume means a restart does not silently empty
+the carts (verified below); `down -v` is the explicit way to drop them.
+
+### 6.3 Pitfalls
+
+Three things that fail quietly rather than loudly, so each was checked on purpose:
+
+| Pitfall | Why it is silent | Handling |
+|---|---|---|
+| JDK-serialized hash values | everything works; the data is simply unreadable outside the JVM | custom `RedisTemplate` with JSON values |
+| `@CacheEvict` called from inside the same bean | no exception, the cache simply keeps the old entry | eviction moved to `ProductCache` |
+| `docker compose exec redis redis-cli -a $REDIS_PASSWORD` | PowerShell expands `$REDIS_PASSWORD` before compose sees it, so redis-cli authenticates with an empty string and answers `NOAUTH` | quote it, or use `--no-auth-warning -a redispw` with the literal value |
+
+### 6.4 Verification (observed, not assumed)
+
+| Check | Result |
+|---|---|
+| `GET /carts/alice` on a new user | `{"userId":"alice","items":[],"totalQuantity":0}` — an empty cart, not a 404 |
+| add 4 x2, then 5 x1, then 4 x1 | `items: [{4, 3}, {5, 1}]`, `totalQuantity: 4` — the duplicate line merged |
+| `TTL carts:alice` / `HGETALL carts:alice` | `604800`, and the hash values are readable JSON |
+| `PUT /items/4 {"quantity":5}` | `totalQuantity: 6`; `{"quantity":0}` → `400`; deleting an absent line → `404` |
+| checkout a cart with 4 x5 | `{"orderId":4,"orderStatus":"CONFIRMED","cartCleared":true}`, order `totalPrice 449.50`, `EXISTS carts:alice` → `0` |
+| checkout 4 x9999 (more than stock) | order `REJECTED`, `cartCleared: false`, cart still returned by `GET` |
+| checkout an empty cart | `400` |
+| cache fill / evict / refill | after `GET /products/5`: `products::5` with TTL 599; after `PUT`: key gone; next `GET` re-cached the new price |
+| cache evicted by a reservation | after ordering one unit, `products::5` gone again and `GET` returned `stock 9` |
+| `docker compose restart redis` with a cart in it | cart still there afterwards, `TTL` 604793 — AOF works |
+
+---
+
+## 7. Roadmap
 
 | Step | Topic | Status |
 |---|---|---|
 | 1 | Docker: product-service, order-service, two MySQL databases | done |
 | 2 | Kafka (KRaft): order-events, inventory-events, product-events; saga + idempotent stock | done |
 | 3 | Elasticsearch: search-service, `products` index, full-text + filters | done |
-| 4 | Redis: cart-service, `@RedisHash`, TTL, checkout; product cache | planned |
+| 4 | Redis: cart-service, `@RedisHash`, TTL, checkout; product cache | done |
 | 5 | Spring Cloud: Eureka, Config Server, OpenFeign, Gateway, X-Request-Id | planned |
