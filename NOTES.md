@@ -459,7 +459,34 @@ demo can jump straight to an order.
 | add two items in the page | badge showed `3`; `GET /api/carts/guest` showed `4 x2`, `6 x1`, total `€308.80` |
 | `POST :8084/api/carts/guest/checkout` | `{"orderId":8,"orderStatus":"CONFIRMED","cartCleared":true}`; the cart was then empty and the order showed `totalPrice 308.80` |
 | the same purchase in the search index | `stock` of product 6 went from 3 to 2 — the page's checkout went through the whole Kafka saga |
-| screenshots | `docs/screenshots/{store,cart,orders}.png`, taken from a headless browser against the running stack |
+| screenshots | `docs/screenshots/{store,cart,orders,zh-cart}.png`, taken from a headless browser against the running stack |
+| `?lang=zh` in the URL | the whole page rendered in Chinese, including the stock badges (`库存 17`, `仅剩 4`) and the order statuses (`待确认 PENDING`) |
+| language button | switching re-rendered the catalogue, the cart and the last order in place, without a reload |
+
+### 7.5 Bilingual page, and why it is one dictionary
+
+The demo is in Hungary, the report is in English, and the person who has to explain this project in
+December thinks in Chinese. So the page carries both languages.
+
+**Static markup keeps keys, not text.** Every label in `index.html` is `data-i18n="cart_title"` or
+`data-i18n-ph="search_ph"`; the English text lives only in the `I18N.en` table of `app.js`. Adding a
+third language is one object, and nothing can drift between the markup and the dictionary because the
+markup has no copy of its own.
+
+**Rendering goes through `t()`.** Anything the script builds - stock badges, the checkout banner, the
+order status, the dates - is formatted with `t("status_" + order.status)` and friends, and dates use
+`toLocaleString(locale())` with `zh-CN` / `en-GB`. No string is concatenated in the page.
+
+**Switching is a re-render, not a reload.** `setLang()` writes the choice to `localStorage`, rewrites the
+static markup and then re-renders whichever view is open with the data already in memory - so the cart and
+the order on screen keep their state while the words change. The first visit picks the language from
+`navigator.language`; `?lang=zh` / `?lang=en` overrides the stored choice, which is how the screenshots
+were taken and how the same laptop can be flipped in front of an examiner without hunting for a button.
+
+Pitfall worth remembering: `docker compose up -d --build frontend` rebuilds the image but, because the
+tag did not change, leaves the old container serving the old files. `--force-recreate` is required, and the
+cheap proof is comparing the served file with the source:
+`(Get-FileHash $tmp).Hash -eq (Get-FileHash frontend\public\app.js).Hash`.
 
 ---
 

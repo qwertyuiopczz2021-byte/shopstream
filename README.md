@@ -11,6 +11,7 @@ TTL and are only emptied when the order they produce is confirmed, and the hot p
 
 Open **<http://localhost:8084>** after `docker compose up`: that is the whole system in a browser —
 browse the catalogue, add to the cart, check out and watch the order come back `CONFIRMED`.
+The page is bilingual (English / 中文, button in the top right corner, or `?lang=zh` in the URL).
 
 ## Services
 
@@ -77,7 +78,14 @@ The interesting part for the architecture: the cart stores product ids only, so 
 product-service for each name and price as it renders. That is the same read model an e-commerce site
 has — a cart is a list of references, not a copy of the catalogue.
 
+The page is bilingual: every string comes from one dictionary in `app.js`, the static markup carries
+`data-i18n` keys, and switching language re-renders whatever is on screen instead of reloading. The
+choice is remembered in `localStorage`, the first visit follows `navigator.language`, and `?lang=zh`
+/`?lang=en` overrides both — handy when the same laptop has to show the demo to two audiences.
+
 ![The cart](docs/screenshots/cart.png)
+
+![The same cart in Chinese](docs/screenshots/zh-cart.png)
 
 ![One order](docs/screenshots/orders.png)
 
