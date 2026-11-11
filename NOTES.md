@@ -403,7 +403,67 @@ Three things that fail quietly rather than loudly, so each was checked on purpos
 
 ---
 
-## 7. Roadmap
+## 7. The storefront
+
+### 7.1 What it is
+
+`frontend/` is three static files (`index.html`, `styles.css`, `app.js`) served by nginx, plus the nginx
+that forwards `/api/*` to the services. It is not part of the five required steps — the PDF asks for a
+distributed backend — but a system that can only be exercised with `Invoke-RestMethod` is hard to
+demonstrate in fifteen minutes (and hard to be sure about while building it).
+
+### 7.2 Decisions
+
+**One origin, no CORS.** The obvious "open index.html and fetch four hosts" design needs a CORS exception
+in four services, and a CORS exception is a permanent widening of every service's surface for the sake of
+a demo page. Instead nginx serves the page and proxies the four prefixes, so the browser sees a single
+origin and the services stay closed. The proxy is what api-gateway will do in Step 5, so the page's URLs
+(`/api/products`, `/api/orders`, `/api/carts`, `/api/search`) were chosen to be the gateway's routes from
+the start; moving the page onto the gateway changes no JavaScript.
+
+**No build step.** No npm, no bundler, no framework: `COPY public/ /usr/share/nginx/html/` and it is
+deployed. A frontend toolchain would put a Node build inside a project whose point is Docker + Spring, and
+would be one more thing that can break in front of the examiner.
+
+**The cart is rendered from references, not from copies.** cart-service stores `productId` and
+`quantity` only, so the cart view resolves each name and price when it renders. That is visible in the
+page's behaviour, not just in the API: change a price in the store and reload the cart, and the cart
+already shows the new price — because it never had the old one.
+
+**Checkout shows the wait.** `POST /carts/{id}/checkout` can block for up to five seconds while the order
+waits for Kafka, so the button says *Placing order…* and the banner says what is being waited for instead
+of looking frozen. The result message is the service's own: "cart cleared" or "order rejected, cart kept".
+Then the page jumps to the order and keeps re-reading it while it is `PENDING`, which is how the
+asynchronous sagas become visible rather than a mystery.
+
+**Views are links.** `#store`, `#cart`, `#orders/8` are real URLs, so a refresh stays where it was and a
+demo can jump straight to an order.
+
+### 7.3 Problems encountered
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `GET /api/products` answered `301` to `/api/products/` (and the browser then failed to connect, because the redirect pointed at port 80 inside the network) | a `location /api/products/` block matches a prefix and nginx normalizes the missing slash | `location /api/products` — no trailing slash, so `proxy_pass` keeps the remainder |
+| `GET /api/products/` answered `404` from Spring | Spring Boot 3 removed trailing-slash matching, so `/products/` is not `/products` | the same change; the page never asks for the slashed form |
+| after `docker compose up -d --build frontend` the browser still served the old page | compose rebuilt the image but did not recreate the container, because the tag had not changed | `--force-recreate` (verified with `curl /styles.css | findstr nowrap`) |
+| headless screenshots were blank | the page fills itself after `fetch`, and the screenshot was taken before the first response | `--virtual-time-budget=6000` |
+
+### 7.4 Verification (observed, not assumed)
+
+| Check | Result |
+|---|---|
+| `GET :8084/` | `200`, 3025 bytes of HTML; `styles.css` and `app.js` also `200` |
+| `GET :8084/api/products` and `/api/products/6` | `200` with the product JSON — the proxy keeps the path |
+| `GET :8084/api/search?q=headphones` | `{"total":1, ...}` |
+| `GET :8084/api/carts/guest` | `{"userId":"guest","items":[],"totalQuantity":0}` |
+| add two items in the page | badge showed `3`; `GET /api/carts/guest` showed `4 x2`, `6 x1`, total `€308.80` |
+| `POST :8084/api/carts/guest/checkout` | `{"orderId":8,"orderStatus":"CONFIRMED","cartCleared":true}`; the cart was then empty and the order showed `totalPrice 308.80` |
+| the same purchase in the search index | `stock` of product 6 went from 3 to 2 — the page's checkout went through the whole Kafka saga |
+| screenshots | `docs/screenshots/{store,cart,orders}.png`, taken from a headless browser against the running stack |
+
+---
+
+## 8. Roadmap
 
 | Step | Topic | Status |
 |---|---|---|

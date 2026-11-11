@@ -2,10 +2,15 @@
 
 Distributed e-commerce platform for the *Development of Distributed Web Applications* semester project.
 
-**Current state: Step 4 — Redis.** Five Spring Boot services, one KRaft Kafka broker, one Elasticsearch
-node and one Redis. Orders are confirmed or rejected asynchronously through events, stock is decremented
+**Current state: Step 4 — Redis (plus a storefront to look at).** Five Spring Boot services, one KRaft
+Kafka broker, one Elasticsearch node, one Redis and a small web page. Orders are confirmed or rejected asynchronously through events, stock is decremented
 exactly once, the catalogue is searchable with full-text queries and filters, carts live in Redis with a
 TTL and are only emptied when the order they produce is confirmed, and the hot product reads are cached.
+
+![The storefront](docs/screenshots/store.png)
+
+Open **<http://localhost:8084>** after `docker compose up`: that is the whole system in a browser —
+browse the catalogue, add to the cart, check out and watch the order come back `CONFIRMED`.
 
 ## Services
 
@@ -18,6 +23,7 @@ TTL and are only emptied when the order they produce is confirmed, and the hot p
 | search-service | 8082 | 8080 | none (index lives in elasticsearch) | full-text product search, filters, pagination |
 | elasticsearch | — | 9200 | — | single node, `products` index |
 | redis | — | 6379 | — | carts (with TTL) and the product read cache, password protected |
+| frontend | 8084 | 80 | none | the storefront page + a proxy to the four HTTP services |
 | kafka | 29092 | 9092 | — | single broker, KRaft mode (no ZooKeeper) |
 
 ## Run
@@ -38,6 +44,8 @@ curl http://localhost:8082/actuator/health
 curl http://localhost:8083/actuator/health
 ```
 
+or simply open <http://localhost:8084>.
+
 Stop (keep the data):
 
 ```bash
@@ -49,6 +57,29 @@ Stop and wipe the databases, the Kafka log and the carts:
 ```bash
 docker compose down -v
 ```
+
+## The storefront
+
+`frontend/` is one HTML page, one stylesheet, one script — no build step, no npm, no framework:
+
+| View | What it shows |
+|---|---|
+| Store | the catalogue from search-service, with the search box, category filter and price window |
+| Cart | the cart from cart-service, quantities editable, checkout, and what happened to the order |
+| Orders | one order by id, its status and its lines, live while it is `PENDING` |
+
+The page is served by nginx, which also forwards `/api/products`, `/api/orders`, `/api/carts` and
+`/api/search` to the service that owns each prefix. **The browser therefore only talks to one origin**,
+so not a single service needs a CORS rule, and the page sees exactly the same URLs it will see when
+api-gateway takes this job over in Step 5.
+
+The interesting part for the architecture: the cart stores product ids only, so the cart view asks
+product-service for each name and price as it renders. That is the same read model an e-commerce site
+has — a cart is a list of references, not a copy of the catalogue.
+
+![The cart](docs/screenshots/cart.png)
+
+![One order](docs/screenshots/orders.png)
 
 ## The order flow
 
@@ -363,6 +394,7 @@ shopstream/
 ├── product-service/      product CRUD + stock reservation
 ├── order-service/        orders + saga state machine
 ├── cart-service/         carts in Redis, checkout into an order
+├── frontend/             the storefront page + its proxy
 ├── notification-service/ simulated e-mails
 ├── search-service/       product index + /search
 └── events/               (per service) the shared event contract package
