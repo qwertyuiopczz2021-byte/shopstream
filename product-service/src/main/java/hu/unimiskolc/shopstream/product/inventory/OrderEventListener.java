@@ -3,6 +3,8 @@ package hu.unimiskolc.shopstream.product.inventory;
 import hu.unimiskolc.shopstream.events.InventoryEvent;
 import hu.unimiskolc.shopstream.events.OrderPlaced;
 import hu.unimiskolc.shopstream.events.Topics;
+import hu.unimiskolc.shopstream.product.ProductEventsPublisher;
+import hu.unimiskolc.shopstream.product.ProductRepository;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,16 +12,25 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.Optional;
+
 @Component
 public class OrderEventListener {
 
     private static final Logger log = LoggerFactory.getLogger(OrderEventListener.class);
 
     private final InventoryService inventoryService;
+    private final ProductRepository products;
+    private final ProductEventsPublisher productEvents;
     private final KafkaTemplate<Object, Object> kafkaTemplate;
 
-    public OrderEventListener(InventoryService inventoryService, KafkaTemplate<Object, Object> kafkaTemplate) {
+    public OrderEventListener(InventoryService inventoryService,
+                              ProductRepository products,
+                              ProductEventsPublisher productEvents,
+                              KafkaTemplate<Object, Object> kafkaTemplate) {
         this.inventoryService = inventoryService;
+        this.products = products;
+        this.productEvents = productEvents;
         this.kafkaTemplate = kafkaTemplate;
     }
 
@@ -46,5 +57,17 @@ public class OrderEventListener {
 
         kafkaTemplate.send(Topics.INVENTORY_EVENTS, String.valueOf(placed.orderId()), result);
         log.info("{} published: order={} reason={}", result.status(), placed.orderId(), result.reason());
+
+        // The stock of several products just changed. Re-read them after the
+        // commit and republish the new snapshot, so the search index never offers
+        // a quantity that is already gone.
+        if (result.status() == InventoryEvent.Status.STOCK_RESERVED) {
+            placed.items().stream()
+                    .map(OrderPlaced.Line::productId)
+                    .distinct()
+                    .map(products::findById)
+                    .flatMap(Optional::stream)
+                    .forEach(productEvents::updated);
+        }
     }
 }

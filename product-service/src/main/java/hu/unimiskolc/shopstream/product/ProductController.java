@@ -14,14 +14,21 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
+/**
+ * CRUD over the product catalogue. Every write also goes out on product-events,
+ * so that the search index and any other consumer can follow the catalogue
+ * without reading this service's database.
+ */
 @RestController
 @RequestMapping("/products")
 public class ProductController {
 
     private final ProductRepository repository;
+    private final ProductEventsPublisher events;
 
-    public ProductController(ProductRepository repository) {
+    public ProductController(ProductRepository repository, ProductEventsPublisher events) {
         this.repository = repository;
+        this.events = events;
     }
 
     @GetMapping
@@ -40,7 +47,9 @@ public class ProductController {
     public Product create(@Valid @RequestBody ProductRequest request) {
         Product product = new Product();
         apply(product, request);
-        return repository.save(product);
+        Product saved = repository.save(product);
+        events.created(saved);
+        return saved;
     }
 
     @PutMapping("/{id}")
@@ -48,7 +57,9 @@ public class ProductController {
         Product product = repository.findById(id)
                 .orElseThrow(() -> new NotFoundException("No product with id " + id));
         apply(product, request);
-        return repository.save(product);
+        Product saved = repository.save(product);
+        events.updated(saved);
+        return saved;
     }
 
     @DeleteMapping("/{id}")
@@ -58,6 +69,7 @@ public class ProductController {
             throw new NotFoundException("No product with id " + id);
         }
         repository.deleteById(id);
+        events.deleted(id);
     }
 
     private void apply(Product product, ProductRequest request) {
