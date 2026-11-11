@@ -93,6 +93,26 @@ services:
       retries: 30
       start_period: 60s
 
+  # Carts and the product cache live here. The password is required because
+  # Redis has no authentication of its own otherwise, and the container is on
+  # the same network as every other service.
+  redis:
+    image: redis:7.2-alpine
+    container_name: shopstream-redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes", "--appendfsync", "everysec"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      # AOF on a named volume: a cart survives a restart and then disappears on
+      # its own when the TTL runs out, which is the behaviour a cart needs.
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
   product-service:
     build: ./product-service
     image: shopstream/product-service:1.0
@@ -102,6 +122,9 @@ services:
       DB_USER: ${MYSQL_USER}
       DB_PASSWORD: ${MYSQL_PASSWORD}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       SERVER_PORT: 8080
     ports:
       - "8080:8080"
@@ -109,6 +132,8 @@ services:
       mysql-product:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   order-service:
@@ -158,7 +183,29 @@ services:
       kafka:
         condition: service_healthy
 
+  # The cart API. It owns no database: a cart is a Redis hash with a TTL, and
+  # checkout simply forwards the cart to order-service.
+  cart-service:
+    build: ./cart-service
+    image: shopstream/cart-service:1.0
+    container_name: shopstream-cart-service
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      ORDER_SERVICE_URL: http://order-service:8080
+      CHECKOUT_TIMEOUT_MS: 5000
+      SERVER_PORT: 8080
+    ports:
+      - "8083:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      order-service:
+        condition: service_started
+
 volumes:
+  redis-data:
   product-db-data:
   order-db-data:
   kafka-data:
