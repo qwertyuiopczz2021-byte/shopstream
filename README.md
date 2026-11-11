@@ -2,8 +2,9 @@
 
 Distributed e-commerce platform for the *Development of Distributed Web Applications* semester project.
 
-**Current state: Step 2 — Kafka.** Three Spring Boot services and a single KRaft Kafka broker.
-Orders are confirmed or rejected asynchronously through events, and stock is decremented exactly once.
+**Current state: Step 3 — Elasticsearch.** Four Spring Boot services, one KRaft Kafka broker and one
+Elasticsearch node. Orders are confirmed or rejected asynchronously through events, stock is decremented
+exactly once, and the catalogue is searchable with full-text queries and filters.
 
 ## Services
 
@@ -12,6 +13,8 @@ Orders are confirmed or rejected asynchronously through events, and stock is dec
 | product-service | 8080 | 8080 | `products` (mysql-product) | product CRUD, reserves stock |
 | order-service   | 8081 | 8080 | `orders` (mysql-order)     | places orders, tracks their state |
 | notification-service | — | — | none | writes one simulated e-mail per finished order |
+| search-service | 8082 | 8080 | none (index lives in elasticsearch) | full-text product search, filters, pagination |
+| elasticsearch | — | 9200 | — | single node, `products` index |
 | kafka | 29092 | 9092 | — | single broker, KRaft mode (no ZooKeeper) |
 
 ## Run
@@ -28,6 +31,7 @@ Check that it is up:
 ```bash
 curl http://localhost:8080/actuator/health
 curl http://localhost:8081/actuator/health
+curl http://localhost:8082/actuator/health
 ```
 
 Stop (keep the data):
@@ -79,7 +83,7 @@ client ──POST /orders──> order-service
 |---|---|---|---|---|---|
 | `order-events` | orderId | 3 | `OrderPlaced`, `OrderConfirmed`, `OrderRejected` | order-service | product-service, notification-service |
 | `inventory-events` | orderId | 3 | `StockReserved`, `StockRejected` | product-service | order-service, notification-service |
-| `product-events` | productId | 3 | `ProductCreated`, `ProductUpdated`, `ProductDeleted` | product-service | search-service (Step 3) |
+| `product-events` | productId | 3 | `ProductCreated`, `ProductUpdated`, `ProductDeleted` | product-service | search-service |
 
 The topics are declared in code (`KafkaTopicConfig` with `TopicBuilder`) and the broker runs with
 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`, so the partition count is always the one we chose rather than
@@ -121,6 +125,43 @@ curl -X PUT http://localhost:8080/products/1 -H "Content-Type: application/json"
 # delete
 curl -X DELETE http://localhost:8080/products/1
 ```
+
+## search-service — /search
+
+product-service publishes `ProductCreated`, `ProductUpdated` and `ProductDeleted` on `product-events`
+(key = productId) after every write, and search-service consumes them into the `products` index. Nothing
+reads product-service's database: the index is built purely from the event stream.
+
+The mapping is declared explicitly instead of being guessed, because the field type decides which queries
+work: `name` and `description` are `text` (analysed, full-text), `category` is `keyword` (exact filter),
+`price` is `double` and `stock` an `integer` (range filters).
+
+```bash
+# everything (default page size 10)
+curl "http://localhost:8082/search"
+
+# full text over name and description
+curl "http://localhost:8082/search?q=keyboard"
+
+# only one category, only a price window, page 0, 5 per page
+curl "http://localhost:8082/search?category=peripherals&minPrice=50&maxPrice=100&page=0&size=5"
+```
+
+```json
+{
+  "total": 1,
+  "page": 0,
+  "size": 10,
+  "items": [
+    { "id": 4, "name": "Mechanical keyboard", "description": "75% layout with brown switches",
+      "category": "peripherals", "price": 89.9, "stock": 25 }
+  ]
+}
+```
+
+All filters are optional and combine: `q` matches name **or** description, `category` is an exact term,
+`minPrice`/`maxPrice` bound the price. `page` starts at 0, `size` is capped at 100, and a nonsense request
+(`size=0`, `minPrice > maxPrice`) answers `400` with a problem+json body.
 
 ## order-service — /orders
 
@@ -211,7 +252,8 @@ service-to-service URLs use the compose service names.
 | `DB_PASSWORD` | product-service, order-service | `${MYSQL_PASSWORD}` |
 | `PRODUCT_SERVICE_URL` | order-service | `http://product-service:8080` |
 | `KAFKA_BOOTSTRAP_SERVERS` | all three services | `kafka:9092` |
-| `SERVER_PORT` | product-service, order-service | `8080` |
+| `ELASTICSEARCH_URIS` | search-service | `http://elasticsearch:9200` |
+| `SERVER_PORT` | product-service, order-service, search-service | `8080` |
 
 The compose file itself reads `.env` (`MYSQL_ROOT_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD`,
 `PRODUCT_DB_NAME`, `ORDER_DB_NAME`). `.env` is git-ignored; `.env.example` is the template.
@@ -225,6 +267,7 @@ shopstream/
 ├── product-service/      product CRUD + stock reservation
 ├── order-service/        orders + saga state machine
 ├── notification-service/ simulated e-mails
+├── search-service/       product index + /search
 └── events/               (per service) the shared event contract package
 ```
 
@@ -237,6 +280,6 @@ is the *class name*, so the class has to exist under the same name on the consum
 
 - [x] Step 1 — Docker: two services, two MySQL databases, one `docker compose up`
 - [x] Step 2 — Kafka: order-events / inventory-events / product-events, async confirmation
-- [ ] Step 3 — Elasticsearch: search-service, products index
+- [x] Step 3 — Elasticsearch: search-service, `products` index, full-text + filters
 - [ ] Step 4 — Redis: cart-service, product cache
 - [ ] Step 5 — Spring Cloud: Eureka, config server, Feign, gateway

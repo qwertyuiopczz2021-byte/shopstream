@@ -224,12 +224,96 @@ empty database and an empty Kafka log.
 
 ---
 
-## 5. Roadmap
+## 5. Step 3 — Elasticsearch
+
+### 5.1 Architecture
+
+```
+   product-service                 search-service              elasticsearch
+   ┌──────────────┐  product-events ┌───────────────┐  index   ┌──────────────┐
+   │ ProductCtrl  │ ──────────────> │ ProductIndex  │ ───────> │ products     │
+   │ create/update│  key=productId  │ Listener      │  write   │ (text/keyword│
+   │ /delete      │                 │               │          │  /double/int)│
+   └──────────────┘                 │ /search ──────┼────────> │              │
+                                    └───────────────┘  query   └──────────────┘
+```
+
+The index is fed only by the event stream; nobody reads product-service's tables.
+
+### 5.2 Decisions and rationale
+
+**The read model is built from events, not from the database.** The rule "a service never reads another
+service's database" leaves exactly one channel for the catalogue: `product-events`. search-service
+therefore owns a *copy* of the product data shaped for searching, and product-service owns the original.
+The cost is eventual consistency — a product is searchable a few hundred milliseconds after it is
+created — and the benefit is that the search service can be rebuilt from scratch at any time by
+replaying the topic (its consumer group starts at `earliest`, so an empty index refills itself).
+
+**An explicit mapping, not dynamic mapping.** Left to itself Elasticsearch guesses: `name` would become
+`text` with a `keyword` sub-field, `category` would become `text`, `price` might become `float` or
+`long`. Guessed types are decided by the *first* document that arrives and are painful to change later.
+The mapping is declared with `@Field`, because the type is what makes a query possible: `text` for the
+two fields people type into, `keyword` for the field people filter on (an analysed `text` cannot be
+matched exactly), `double` for money and `integer` for stock so range filters behave numerically.
+
+**The index is created at startup if it is missing.** `IndexInitializer` runs as an `ApplicationRunner`,
+asks `IndexOperations` whether `products` exists and calls `createWithMapping()` if not. Without it the
+first query against a fresh cluster fails with `index_not_found_exception` — an empty result set and a
+missing index look the same to a user but are very different to a demo.
+
+**The document is a separate class from the entity.** `ProductDocument` has no JPA annotations and
+search-service never imports product-service's `Product`. The only thing the two services share is the
+event package (`ProductCreated`, `ProductUpdated`, `ProductDeleted`, `Topics`), duplicated verbatim.
+A shared entity would couple the two schemas, which is the coupling the whole architecture is avoiding.
+
+**Full text in `must`, filters in `filter`.** `q` goes through `multiMatch` over `name` and
+`description` inside `must`, so hits are *scored* and the best match comes first. `category` and the
+price window go inside `filter`, where clauses are boolean-only: they do not influence the score, and
+Elasticsearch can cache them. Putting `category` in `must` would make a cheap term match outrank a good
+text match.
+
+**`bool.build()._toQuery()`.** The Java client's `BoolQuery.Builder.build()` returns `BoolQuery`, not the
+`Query` that `withQuery()` wants. The bridge is the generated `_toQuery()` method; there is no implicit
+conversion, and the compiler only says `cannot find symbol: method toQuery()`.
+
+**The controller validates its own input.** `page < 0`, `size <= 0`, `size > 100` and
+`minPrice > maxPrice` are rejected with `400` and a problem+json body before anything reaches
+Elasticsearch — a negative page would otherwise surface as a 500 from the client library, and an
+unbounded `size` is a trivial way to ask the cluster for the entire index.
+
+**Stock freshness.** A reservation changes stock in product-service's database; the index would keep
+the old number forever. After publishing `StockReserved`, product-service re-reads the touched products
+and publishes `ProductUpdated`, so the index converges without search-service ever calling back into
+product-service (which would put a synchronous dependency in the read path).
+
+### 5.3 Problems encountered
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `search-service` image build failed with no diagnostic | the Dockerfile runs `mvn -B -q`, and `-q` hides the compiler error | ran the same build in a bare `maven:3.9-eclipse-temurin-21` container without `-q` |
+| `cannot find symbol: method toQuery()` at `ProductSearchService.java:65` | `BoolQuery.Builder.build()` returns `BoolQuery`, which is not a `Query` | `bool.build()._toQuery()` |
+
+### 5.4 Verification (observed, not assumed)
+
+| Check | Result |
+|---|---|
+| `GET :9200/products/_mapping` | `name`/`description` = `text`, `category` = `keyword`, `price` = `double`, `stock` = `integer` |
+| create a product | `ProductCreated published for product 3` → 4 s later `GET :8082/search?q=keyboard` returned 1 hit |
+| description-only word | `?q=brown` (present only in `description`, not in `name`) returned the same product → analysis works |
+| `?category=peripherals&minPrice=50&maxPrice=100` | 1 hit; `?category=audio` → `total: 0` |
+| `PUT /products/3` (price 89.90 → 79.90, stock 25 → 30) | search returned `price 79.9`, `stock 30` after 3 s |
+| `POST /orders` 2 x product 3 | order `PENDING` (`totalPrice 159.80`) → search `stock 28` after 6 s → order `CONFIRMED` |
+| `DELETE /products/3` | `ProductDeleted published` → `Removed product 3 from the index` → `total: 0` |
+| invalid paging / price window | `?size=0` → `400`; `?minPrice=200&maxPrice=100` → `400` |
+
+---
+
+## 6. Roadmap
 
 | Step | Topic | Status |
 |---|---|---|
 | 1 | Docker: product-service, order-service, two MySQL databases | done |
 | 2 | Kafka (KRaft): order-events, inventory-events, product-events; saga + idempotent stock | done |
-| 3 | Elasticsearch: search-service, `products` index, full-text + filters | planned |
+| 3 | Elasticsearch: search-service, `products` index, full-text + filters | done |
 | 4 | Redis: cart-service, `@RedisHash`, TTL, checkout; product cache | planned |
 | 5 | Spring Cloud: Eureka, Config Server, OpenFeign, Gateway, X-Request-Id | planned |
