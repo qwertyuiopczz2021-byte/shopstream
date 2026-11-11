@@ -1,0 +1,29 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: cart-service
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      connect-timeout: 2s
+
+order:
+  service:
+    url: ${ORDER_SERVICE_URL:http://order-service:8080}
+
+# A checkout is not decided when POST /orders returns: the order is PENDING and
+# the stock answer arrives later on Kafka. We wait this long for that answer.
+checkout:
+  timeout-ms: ${CHECKOUT_TIMEOUT_MS:5000}
+  poll-interval-ms: ${CHECKOUT_POLL_INTERVAL_MS:250}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
