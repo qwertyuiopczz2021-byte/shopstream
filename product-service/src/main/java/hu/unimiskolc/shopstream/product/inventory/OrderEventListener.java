@@ -3,6 +3,7 @@ package hu.unimiskolc.shopstream.product.inventory;
 import hu.unimiskolc.shopstream.events.InventoryEvent;
 import hu.unimiskolc.shopstream.events.OrderPlaced;
 import hu.unimiskolc.shopstream.events.Topics;
+import hu.unimiskolc.shopstream.product.ProductCache;
 import hu.unimiskolc.shopstream.product.ProductEventsPublisher;
 import hu.unimiskolc.shopstream.product.ProductRepository;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -12,6 +13,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Optional;
 
 @Component
@@ -22,15 +24,18 @@ public class OrderEventListener {
     private final InventoryService inventoryService;
     private final ProductRepository products;
     private final ProductEventsPublisher productEvents;
+    private final ProductCache cache;
     private final KafkaTemplate<Object, Object> kafkaTemplate;
 
     public OrderEventListener(InventoryService inventoryService,
                               ProductRepository products,
                               ProductEventsPublisher productEvents,
+                              ProductCache cache,
                               KafkaTemplate<Object, Object> kafkaTemplate) {
         this.inventoryService = inventoryService;
         this.products = products;
         this.productEvents = productEvents;
+        this.cache = cache;
         this.kafkaTemplate = kafkaTemplate;
     }
 
@@ -62,9 +67,18 @@ public class OrderEventListener {
         // commit and republish the new snapshot, so the search index never offers
         // a quantity that is already gone.
         if (result.status() == InventoryEvent.Status.STOCK_RESERVED) {
-            placed.items().stream()
+            List<Long> touched = placed.items().stream()
                     .map(OrderPlaced.Line::productId)
                     .distinct()
+                    .toList();
+
+            // Cached copies of these products hold the stock level from before
+            // the reservation, so they have to go first.
+            touched.forEach(cache::evict);
+
+            // Then re-read after the commit and republish the snapshot, so the
+            // search index never offers a quantity that is already gone.
+            touched.stream()
                     .map(products::findById)
                     .flatMap(Optional::stream)
                     .forEach(productEvents::updated);

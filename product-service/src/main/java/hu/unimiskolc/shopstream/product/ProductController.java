@@ -1,6 +1,8 @@
 package hu.unimiskolc.shopstream.product;
 
 import jakarta.validation.Valid;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,7 +38,14 @@ public class ProductController {
         return repository.findAll();
     }
 
+    /**
+     * Cache-aside: the first read of a product loads it from MySQL, later reads
+     * come from Redis. The entry is dropped the moment the product changes (here
+     * and in the inventory listener), so the cache can never serve a stale price
+     * or a stock level that was already sold.
+     */
     @GetMapping("/{id}")
+    @Cacheable(cacheNames = "products", key = "#id")
     public Product get(@PathVariable Long id) {
         return repository.findById(id)
                 .orElseThrow(() -> new NotFoundException("No product with id " + id));
@@ -53,6 +62,7 @@ public class ProductController {
     }
 
     @PutMapping("/{id}")
+    @CacheEvict(cacheNames = "products", key = "#id")
     public Product update(@PathVariable Long id, @Valid @RequestBody ProductRequest request) {
         Product product = repository.findById(id)
                 .orElseThrow(() -> new NotFoundException("No product with id " + id));
@@ -63,6 +73,7 @@ public class ProductController {
     }
 
     @DeleteMapping("/{id}")
+    @CacheEvict(cacheNames = "products", key = "#id")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable Long id) {
         if (!repository.existsById(id)) {
