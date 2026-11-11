@@ -185,3 +185,10 @@ button.ghost.danger:hover { color: var(--bad); border-color: #5a2e33; }
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.bad { border-color: #7f3540; background: #2d1a1f; }
+/* language switch */
+.lang {
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  font-weight: 650; font-size: 13px; padding: 6px 13px; border-radius: 9px;
+  min-width: 74px;
+}
+.lang:hover { border-color: #4b5580; }

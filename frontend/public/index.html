@@ -9,68 +9,66 @@
 <body>
 
 <header class="topbar">
-  <div class="brand"><span class="dot"></span>ShopStream<span class="tag">demo storefront</span></div>
+  <div class="brand"><span class="dot"></span>ShopStream<span class="tag" data-i18n="brand_tag"></span></div>
 
   <nav class="tabs">
-    <button class="tab active" data-view="store">Store</button>
-    <button class="tab" data-view="cart">Cart<span id="cart-count" class="pill">0</span></button>
-    <button class="tab" data-view="orders">Orders</button>
+    <button class="tab active" data-view="store" data-i18n="nav_store"></button>
+    <button class="tab" data-view="cart"><span data-i18n="nav_cart"></span><span id="cart-count" class="pill">0</span></button>
+    <button class="tab" data-view="orders" data-i18n="nav_orders"></button>
   </nav>
 
-  <label class="user">signed in as <input id="user-id" value="guest" autocomplete="off" spellcheck="false"></label>
+  <label class="user"><span data-i18n="signed_in"></span><input id="user-id" value="guest" autocomplete="off" spellcheck="false"></label>
+  <button id="lang" class="lang" title="language">中文</button>
 </header>
 
 <main>
 
   <section id="view-store" class="view">
     <div class="toolbar">
-      <input id="q" class="grow" placeholder="Search the catalogue — name or description" autocomplete="off">
-      <select id="category">
-        <option value="">all categories</option>
-      </select>
-      <input id="min-price" class="price" type="number" min="0" step="1" placeholder="min €">
-      <input id="max-price" class="price" type="number" min="0" step="1" placeholder="max €">
-      <button id="search" class="primary">Search</button>
-      <button id="reset" class="ghost">Reset</button>
+      <input id="q" class="grow" data-i18n-ph="search_ph" autocomplete="off">
+      <select id="category"></select>
+      <input id="min-price" class="price" type="number" min="0" step="1" data-i18n-ph="min_ph">
+      <input id="max-price" class="price" type="number" min="0" step="1" data-i18n-ph="max_ph">
+      <button id="search" class="primary" data-i18n="btn_search"></button>
+      <button id="reset" class="ghost" data-i18n="btn_reset"></button>
     </div>
 
-    <p id="result-line" class="muted">loading…</p>
+    <p id="result-line" class="muted" data-i18n="loading"></p>
     <div id="grid" class="grid"></div>
   </section>
 
   <section id="view-cart" class="view hidden">
-    <h2>Your cart</h2>
-    <p class="muted">Stored in Redis under <code id="cart-key">carts:guest</code>, with a 7 day TTL that every change resets.</p>
+    <h2 data-i18n="cart_title"></h2>
+    <p id="cart-note" class="muted"></p>
 
     <div id="cart-banner" class="banner hidden"></div>
-    <div id="cart-empty" class="empty hidden">Your cart is empty. Pick something in the store.</div>
+    <div id="cart-empty" class="empty hidden" data-i18n="cart_empty"></div>
 
     <div id="cart-table" class="cart-table">
       <div class="cart-head">
-        <span>Item</span><span>Price</span><span>Qty</span><span>Total</span><span></span>
+        <span data-i18n="col_item"></span><span data-i18n="col_price"></span><span data-i18n="col_qty"></span><span data-i18n="col_total"></span><span></span>
       </div>
       <div id="cart-rows"></div>
       <div class="cart-foot">
-        <button id="clear-cart" class="ghost danger">Clear cart</button>
-        <div class="sum">Total <strong id="cart-total">€0.00</strong></div>
-        <button id="checkout" class="primary big">Checkout →</button>
+        <button id="clear-cart" class="ghost danger" data-i18n="btn_clear"></button>
+        <div class="sum"><span data-i18n="total"></span><strong id="cart-total">€0.00</strong></div>
+        <button id="checkout" class="primary big" data-i18n="btn_checkout"></button>
       </div>
     </div>
   </section>
 
   <section id="view-orders" class="view hidden">
-    <h2>Orders</h2>
-    <p class="muted">An order is answered as <code>PENDING</code> first: the stock question is settled by
-      Kafka afterwards, and the status changes to <code>CONFIRMED</code> or <code>REJECTED</code>.</p>
+    <h2 data-i18n="orders_title"></h2>
+    <p id="orders-note" class="muted"></p>
 
     <div class="toolbar">
-      <input id="order-id" class="price" type="number" min="1" placeholder="order id">
-      <button id="track" class="primary">Track order</button>
+      <input id="order-id" class="price" type="number" min="1" data-i18n-ph="order_id_ph">
+      <button id="track" class="primary" data-i18n="btn_track"></button>
     </div>
 
     <div id="order-card"></div>
 
-    <h3 class="recent-title">Orders placed from this browser</h3>
+    <h3 class="recent-title" data-i18n="recent_title"></h3>
     <div id="recent" class="recent"></div>
   </section>
 
