@@ -1,0 +1,18 @@
+# Debug helper, not part of the submitted system: the main compose file is the
+# one that counts, and it publishes only the gateway. Use this file to look at
+# the registry dashboard or to run a Kafka console tool from the host:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Nothing is added, only two ports are published on top of the main file.
+services:
+  discovery-server:
+    ports:
+      - "8761:8761"
+  kafka:
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT

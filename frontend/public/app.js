@@ -1,4 +1,4 @@
-// The page talks to one origin only (/api/...) — nginx forwards each prefix to the
+// The page talks to one origin only (/api/...) — the gateway forwards each prefix to its
 // service that owns it. Every path here is the one api-gateway will serve in Step 5.
 //
 // Two languages, no framework: static text carries data-i18n keys, everything the

@@ -1,6 +1,15 @@
 name: shopstream
 
+# From Step 5 on, exactly one container publishes a port: the gateway on 8080.
+# Every other service is reachable only inside this network, by its compose name
+# or through Eureka. For debugging there is docker-compose.dev.yml, which
+# publishes the registry and the broker on the host without changing this file.
+
 services:
+
+  # ---------------------------------------------------------------------------
+  # infrastructure
+  # ---------------------------------------------------------------------------
 
   mysql-product:
     image: mysql:8.4
@@ -44,10 +53,9 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
-      # kafka:9092 is what the containers use, localhost:29092 is for tools on the host.
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -60,8 +68,6 @@ services:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
     volumes:
       - kafka-data:/var/lib/kafka/data
-    ports:
-      - "29092:29092"
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -113,28 +119,77 @@ services:
       retries: 20
       start_period: 5s
 
-  product-service:
-    build: ./product-service
-    image: shopstream/product-service:1.0
-    container_name: shopstream-product-service
+  # ---------------------------------------------------------------------------
+  # Spring Cloud infrastructure
+  # ---------------------------------------------------------------------------
+
+  discovery-server:
+    build: ./discovery-server
+    image: shopstream/discovery-server:1.0
+    container_name: shopstream-discovery-server
     environment:
-      DB_URL: jdbc:mysql://mysql-product:3306/${PRODUCT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-      DB_USER: ${MYSQL_USER}
-      DB_PASSWORD: ${MYSQL_PASSWORD}
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      SERVER_PORT: 8080
-    ports:
-      - "8080:8080"
+      SERVER_PORT: 8761
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8761/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  # Serves config-repo/*.yml over HTTP. The folder is mounted instead of copied
+  # into the image, so changing a property needs a restart of the client service
+  # and nothing else.
+  config-server:
+    build: ./config-server
+    image: shopstream/config-server:1.0
+    container_name: shopstream-config-server
+    environment:
+      SERVER_PORT: 8888
+    volumes:
+      - ./config-repo:/config-repo:ro
     depends_on:
-      mysql-product:
+      discovery-server:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # business services - no published ports, all found through Eureka
+  # ---------------------------------------------------------------------------
+
+  # Two instances of the same image: the gateway load-balances between them, and
+  # the Eureka dashboard shows them as two entries of product-service.
+  product-service:
+    <<: &product-service
+      build: ./product-service
+      image: shopstream/product-service:1.0
+      environment:
+        DB_URL: jdbc:mysql://mysql-product:3306/${PRODUCT_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+        DB_USER: ${MYSQL_USER}
+        DB_PASSWORD: ${MYSQL_PASSWORD}
+        KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+        REDIS_HOST: redis
+        REDIS_PORT: 6379
+        REDIS_PASSWORD: ${REDIS_PASSWORD}
+        SERVER_PORT: 8080
+      depends_on:
+        mysql-product:
+          condition: service_healthy
+        kafka:
+          condition: service_healthy
+        redis:
+          condition: service_healthy
+        config-server:
+          condition: service_healthy
+    container_name: shopstream-product-service-1
+
+  product-service-2:
+    <<: *product-service
+    container_name: shopstream-product-service-2
 
   order-service:
     build: ./order-service
@@ -144,18 +199,15 @@ services:
       DB_URL: jdbc:mysql://mysql-order:3306/${ORDER_DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       DB_USER: ${MYSQL_USER}
       DB_PASSWORD: ${MYSQL_PASSWORD}
-      PRODUCT_SERVICE_URL: http://product-service:8080
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SERVER_PORT: 8080
-    ports:
-      - "8081:8080"
     depends_on:
       mysql-order:
         condition: service_healthy
       kafka:
         condition: service_healthy
-      product-service:
-        condition: service_started
+      config-server:
+        condition: service_healthy
 
   notification-service:
     build: ./notification-service
@@ -166,6 +218,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      config-server:
+        condition: service_healthy
 
   search-service:
     build: ./search-service
@@ -175,16 +229,16 @@ services:
       ELASTICSEARCH_URIS: http://elasticsearch:9200
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SERVER_PORT: 8080
-    ports:
-      - "8082:8080"
     depends_on:
       elasticsearch:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      config-server:
+        condition: service_healthy
 
   # The cart API. It owns no database: a cart is a Redis hash with a TTL, and
-  # checkout simply forwards the cart to order-service.
+  # checkout calls order-service through a Feign client resolved by Eureka.
   cart-service:
     build: ./cart-service
     image: shopstream/cart-service:1.0
@@ -193,28 +247,46 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      ORDER_SERVICE_URL: http://order-service:8080
       CHECKOUT_TIMEOUT_MS: 5000
       SERVER_PORT: 8080
-    ports:
-      - "8083:8080"
     depends_on:
       redis:
+        condition: service_healthy
+      config-server:
         condition: service_healthy
       order-service:
         condition: service_started
 
-  # The storefront. One static page plus a reverse proxy, published on 8084: the
-  # browser talks to a single origin, so no service needs a CORS exception.
-  # Step 5 replaces this proxy with api-gateway (same /api/* paths).
+  # ---------------------------------------------------------------------------
+  # edge
+  # ---------------------------------------------------------------------------
+
+  # The storefront is only static files now: the nginx container no longer
+  # proxies /api/*, because the gateway does that and both are behind it.
   frontend:
     build: ./frontend
     image: shopstream/frontend:1.0
     container_name: shopstream-frontend
+
+  # The only published port in the system. Routes come from config-server
+  # (config-repo/api-gateway.yml), and every API route is an lb:// URI, so the
+  # gateway asks Eureka where the service is instead of dialling an address.
+  api-gateway:
+    build: ./api-gateway
+    image: shopstream/api-gateway:1.0
+    container_name: shopstream-api-gateway
+    environment:
+      SERVER_PORT: 8080
     ports:
-      - "8084:80"
+      - "8080:8080"
     depends_on:
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
       product-service:
+        condition: service_started
+      product-service-2:
         condition: service_started
       order-service:
         condition: service_started
@@ -222,6 +294,14 @@ services:
         condition: service_started
       search-service:
         condition: service_started
+      frontend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
 
 volumes:
   redis-data:

@@ -1,0 +1,28 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  # Everything that is not bootstrap configuration comes from config-server, so
+  # the route table can be changed without rebuilding this image.
+  config:
+    import: "optional:configserver:http://config-server:8888"
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          # Off on purpose: the routes are written by hand, and a locator would
+          # also expose /PRODUCT-SERVICE/** style paths nobody asked for.
+          enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # "gateway" is what makes /actuator/gateway/routes readable: the RouteDefinition
+        # objects that were actually built from config-server, with their filters.
+        include: health,info,gateway
+  endpoint:
+    gateway:
+      enabled: true
