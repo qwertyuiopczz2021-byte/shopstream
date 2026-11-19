@@ -14,7 +14,7 @@ so that the written report can be assembled from it without reconstructing histo
 | System | ShopStream — distributed e-commerce platform |
 | Deadline (code + report) | Friday, 4 December 2026 |
 | Presentation | Wednesday, 9 December 2026, 15 minutes |
-| Stack | Java 21, Spring Boot 3.3.4, MySQL 8.4, Kafka 3.7 (`cp-kafka` 7.6.1, KRaft), Docker Compose |
+| Stack | Java 21, Spring Boot 3.3.13, Spring Cloud 2023.0.6, MySQL 8.4, Kafka 3.7 (`cp-kafka` 7.6.1, KRaft), Elasticsearch 8.15, Redis 7, Docker Compose |
 
 ---
 
@@ -490,7 +490,188 @@ cheap proof is comparing the served file with the source:
 
 ---
 
-## 8. Roadmap
+## 8. Step 5 — Spring Cloud
+
+### 8.1 What was added
+
+Three new modules, and every existing one changed a little:
+
+| Module | Contents | Job |
+|---|---|---|
+| `discovery-server/` | `DiscoveryServerApplication` (`@EnableEurekaServer`) | the registry on 8761 |
+| `config-server/` | `ConfigServerApplication` (`@EnableConfigServer`), `native` profile | serves `config-repo/` on 8888 |
+| `config-repo/` | `application.yml` + one `<service>.yml` per service | the configuration that used to be in eight `application.yml` files |
+| `api-gateway/` | `ApiGatewayApplication`, `RequestIdFilter` | the only published port, routing, request id |
+| order-service | `ProductFeignClient`, `FeignErrorConfig` | `RestClient` + `PRODUCT_SERVICE_URL` deleted |
+| cart-service | `OrderClient` | `RestClient` + `ORDER_SERVICE_URL` deleted |
+| product-service | `ProductFeignClient`-free, but two instances in compose | the load-balancing target |
+| all services | `spring-cloud-starter-netflix-eureka-client`, `spring-cloud-starter-config` | register, and fetch configuration |
+| frontend | `nginx.conf` lost its proxy | the gateway owns the `/api` prefixes now |
+
+Spring Boot **3.3.13** with Spring Cloud **2023.0.6** — see 8.3 for why the patch version moved.
+
+### 8.2 Decisions and rationale
+
+**Eureka is a registry, not a router.** No service ever calls `discovery-server`; it is asked *where* an
+instance is and then the client talks to the instance directly. That is why `prefer-ip-address: true`
+matters: the container hostname is only resolvable inside the compose network, while the container IP is
+reachable from every other container.
+
+**Self-preservation is off.** `eureka.server.enable-self-preservation: false` means a stopped container
+is dropped once its lease expires (~90 s, the default; the dashboard's threshold notice is expected) instead
+of being kept for as long as the server considers the loss "normal". For a stack that is started and stopped
+by hand, an honest registry beats a forgiving one — and it is what makes the failover behaviour in 8.4
+reproducible instead of a matter of luck.
+
+**Configuration lives outside the images.** The config server runs the `native` profile with
+`search-locations: file:/config-repo`, and compose mounts `config-repo/` read-only into the container.
+A git backend would be one property (`spring.cloud.config.server.git.uri`), but the project must build and
+run without network access, and a folder has the same shape: one shared `application.yml` plus one file per
+`spring.application.name`. Since the files are in the repository and mounted, changing a route or a topic
+name is a `docker compose restart api-gateway` instead of a rebuild.
+
+**Only bootstrap stays local.** Each service keeps `server.port`, `spring.application.name` and
+
+```yaml
+spring:
+  config:
+    import: "optional:configserver:http://config-server:8888"
+```
+
+`optional:` means *start even if the config server is not answering* — the service then runs on the
+defaults in its own file, which are the same values. Compose still orders the start with
+`depends_on: config-server: condition: service_healthy`, so the fallback is a safety net, not the normal
+path.
+
+**Topic names left the code.** The four copies of `Topics.java` are gone. `config-repo/application.yml`
+declares
+
+```yaml
+shopstream:
+  topics:
+    order-events: ${TOPIC_ORDER_EVENTS:order-events}
+    inventory-events: ${TOPIC_INVENTORY_EVENTS:inventory-events}
+    product-events: ${TOPIC_PRODUCT_EVENTS:product-events}
+    partitions: ${TOPIC_PARTITIONS:3}
+    replicas: ${TOPIC_REPLICAS:1}
+```
+
+and the code reads it by placeholder — `@KafkaListener(topics = "${shopstream.topics.order-events}", ...)`,
+`KafkaTemplate.send("${shopstream.topics.inventory-events}", ...)`, and `KafkaTopicConfig` builds
+`TopicBuilder.name(properties.name()).partitions(properties.partitions())` from the same keys. One file to
+rename a topic, and producer, consumer and topic declaration cannot drift apart.
+
+**Feign replaced the hand-written clients.** The URL environment variables are gone; the client is an
+interface whose `name` is the Eureka service id and whose `path` is the prefix:
+
+```java
+@FeignClient(name = "product-service", path = "/products")
+public interface ProductFeignClient {
+    @GetMapping("/{id}")
+    ProductDto findById(@PathVariable("id") Long productId);
+}
+```
+
+**Feign's error model had to be translated back.** Feign throws `FeignException` for any non-2xx answer,
+but this API is specified in terms of *product unknown* (404) and *product service unavailable* (502), so
+`FeignErrorConfig` installs an `ErrorDecoder`:
+
+```java
+return (methodKey, response) -> switch (response.status()) {
+    case 404 -> new ProductNotFoundException("product-service has no product at " + response.request().url());
+    case 500, 502, 503, 504 -> new ProductUnavailableException(
+            "product-service answered " + response.status() + " for " + response.request().url());
+    default -> new ErrorDecoder.Default().decode(methodKey, response);
+};
+```
+
+Without it the `@ControllerAdvice` would have answered 500 for both cases and the API contract from Step 1
+would have silently changed. With it, `POST /orders` still answers 404 / 502 exactly as before.
+
+**cart-service's client keeps one convenience method.** `OrderClient` has a `default` method that maps
+`List<CartItem>` to `OrderRequest`, so `CartService.checkout` was not rewritten:
+
+```java
+default OrderView placeOrder(List<CartItem> items) {
+    return placeOrder(new OrderRequest(items.stream()
+            .map(i -> new OrderRequest.Line(i.getProductId(), i.getQuantity())).toList()));
+}
+```
+
+**The gateway is reactive and knows it.** `spring-cloud-starter-gateway` pulls in WebFlux + Netty;
+`spring-boot-starter-web` must not be on this module's classpath, or Boot starts a servlet container and
+no route is ever registered (the application starts "fine" and every request is a 404).
+
+**Routes are configuration.** They live in `config-repo/api-gateway.yml`, matched top to bottom, the four
+API routes first and the storefront catch-all last:
+
+```yaml
+- id: product-service
+  uri: lb://product-service
+  predicates: [ Path=/api/products,/api/products/** ]
+  filters: [ StripPrefix=1 ]
+- id: frontend
+  uri: http://frontend:80
+  predicates: [ Path=/** ]
+```
+
+`StripPrefix=1` is what keeps the services untouched: they still answer `/products`, and the gateway
+drops the `/api` segment. The frontend is addressed by compose name because nginx is not a Spring
+application and cannot register in Eureka. `spring.cloud.gateway.discovery.locator.enabled` stays off —
+a locator would additionally publish `/PRODUCT-SERVICE/**` URLs that nobody asked for.
+
+**One request id, set before routing.** `RequestIdFilter` is a `GlobalFilter` with
+`Ordered.HIGHEST_PRECEDENCE`: it reuses an incoming `X-Request-Id` or generates a UUID, puts it on the
+mutated request, copies it onto the response, and logs method, path, status, duration and id. The response
+header is set on `exchange.getResponse()` *before* the chain continues, which is the only point where it is
+still allowed to be modified.
+
+**The dashboard is not published.** Keeping Eureka off the host is what makes "only the gateway is
+exposed" true. `docker-compose.dev.yml` is a two-line overlay that adds host ports for 8761 and a Kafka
+client, and is used only for screenshots. `docker compose up -d` without the overlay restores the single
+published port, because the overlay's ports are not in the base file.
+
+### 8.3 Problems encountered
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| every gateway request 500, first log line `java.lang.NoSuchMethodError: 'java.util.Set org.springframework.http.HttpHeaders.headerSet()'`, stack at `RemoveHopByHopHeadersFilter.filter(RemoveHopByHopHeadersFilter.java:77)` | `spring-cloud-gateway-server` **4.1.9** is compiled against Boot 3.3.13 / Spring Framework 6.1.21 (`headerSet()` was added late in 6.1.x) while Boot **3.3.4** pins 6.1.13 | moved all eight poms to Boot **3.3.13**; nothing else changed |
+| gateway starts, route table empty, every request 404 | `spring-boot-starter-web` on a gateway module | not on the classpath here — recorded because it is the first thing to check |
+| first ~30 s after `up` all routes answer `503 Unable to find instance for <service>` | a fresh gateway has an empty registry; it learns the instances on its first Eureka fetch | wait, or retry — the log line is `RoundRobinLoadBalancer : No servers available for service: ...` with `DiscoveryClient ... initial instances count: 0` |
+| `docker compose stop product-service-1`: "no such service" | `product-service-1` is the *container* name; the compose service is `product-service` | `docker compose stop product-service` |
+| `/actuator/gateway/routes` 404 | the endpoint is not exposed by default | `management.endpoints.web.exposure.include: health,info,gateway` + `management.endpoint.gateway.enabled: true` |
+
+**Version note worth keeping for the report.** Lecture 6 is written against Spring Cloud 2025.x, where the
+gateway dependency is `spring-cloud-starter-gateway-server-webflux` and the routes moved to
+`spring.cloud.gateway.server.webflux.routes` — the old prefix silently loads *no* routes. This project
+stays on 2023.0.6 with `spring-cloud-starter-gateway` and `spring.cloud.gateway.routes`, because that is
+the line matched to Boot 3.3.x, and renames property prefixes does not demonstrate anything the lecture
+does not already say.
+
+### 8.4 Verification (observed, not assumed)
+
+| Check | Result |
+|---|---|
+| `docker compose up -d --remove-orphans` | 15 containers running |
+| `GET :8761/eureka/apps` | 7 applications: SEARCH-SERVICE, API-GATEWAY, CART-SERVICE, ORDER-SERVICE, CONFIG-SERVER, NOTIFICATION-SERVICE, PRODUCT-SERVICE (2 instances) |
+| `GET :8888/product-service/default` | `propertySources` = `file:/config-repo/product-service.yml` + `file:/config-repo/application.yml` |
+| `docker compose ps` | only api-gateway publishes a host port (8080); every other row shows a bare container port |
+| `GET :8080/api/products` | `200`, product JSON, and an `X-Request-Id` response header |
+| `GET :8080/api/search?category=peripherals&minPrice=50&maxPrice=100` | `{"total":1, ...}` — id 4 |
+| `POST :8080/api/carts/demo5/items` then `/checkout` | `{"orderId":10,"orderStatus":"CONFIRMED","cartCleared":true,"message":"Order confirmed, cart cleared"}` |
+| `GET :8080/api/orders/10` | `CONFIRMED`, `totalPrice 179.80` (2 × 89.90) — the price came through Feign |
+| `docker compose logs notification-service` | the simulated e-mail for order #10 (Total 179.80, 2 x product 4) |
+| `GET :8080/` | `200`, 3018 bytes — the storefront arrived through the catch-all route |
+| `GET :8080/actuator/gateway/routes` | 5 routes, each with its predicate, `StripPrefix parts = 1` and `lb://` URI |
+| `curl -H "X-Request-Id: demo-123"` | the response header was `X-Request-Id: demo-123` — an incoming id is reused, not replaced |
+| gateway log | `GET /api/carts/guest -> 200 OK (14 ms) requestId=da6198c1-...` |
+| `docker compose stop product-service`, then 6 × `GET /api/products/4` | `500 200 200 200 200 200` — one request lost to the instance that had just died, the rest served by the survivor |
+| `kafka-topics --describe` | `product-events` and `inventory-events`: `PartitionCount: 3`, `ReplicationFactor: 1` — still built from the config server's values |
+| screenshots | `docs/screenshots/eureka.png` (7 applications, `PRODUCT-SERVICE (2)`) and `docs/screenshots/gateway-store.png` (the page through 8080) |
+
+---
+
+## 9. Roadmap
 
 | Step | Topic | Status |
 |---|---|---|
@@ -498,4 +679,4 @@ cheap proof is comparing the served file with the source:
 | 2 | Kafka (KRaft): order-events, inventory-events, product-events; saga + idempotent stock | done |
 | 3 | Elasticsearch: search-service, `products` index, full-text + filters | done |
 | 4 | Redis: cart-service, `@RedisHash`, TTL, checkout; product cache | done |
-| 5 | Spring Cloud: Eureka, Config Server, OpenFeign, Gateway, X-Request-Id | planned |
+| 5 | Spring Cloud: Eureka, Config Server, OpenFeign, Gateway, X-Request-Id | done |
