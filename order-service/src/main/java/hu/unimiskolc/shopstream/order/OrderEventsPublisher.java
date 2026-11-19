@@ -3,9 +3,9 @@ package hu.unimiskolc.shopstream.order;
 import hu.unimiskolc.shopstream.events.OrderConfirmed;
 import hu.unimiskolc.shopstream.events.OrderPlaced;
 import hu.unimiskolc.shopstream.events.OrderRejected;
-import hu.unimiskolc.shopstream.events.Topics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -25,9 +25,12 @@ public class OrderEventsPublisher {
     private static final Logger log = LoggerFactory.getLogger(OrderEventsPublisher.class);
 
     private final KafkaTemplate<Object, Object> kafkaTemplate;
+    private final String orderEventsTopic;
 
-    public OrderEventsPublisher(KafkaTemplate<Object, Object> kafkaTemplate) {
+    public OrderEventsPublisher(KafkaTemplate<Object, Object> kafkaTemplate,
+                                @Value("${shopstream.topics.order-events}") String orderEventsTopic) {
         this.kafkaTemplate = kafkaTemplate;
+        this.orderEventsTopic = orderEventsTopic;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -46,7 +49,7 @@ public class OrderEventsPublisher {
     }
 
     private void send(String type, Long orderId, Object event) {
-        kafkaTemplate.send(Topics.ORDER_EVENTS, String.valueOf(orderId), event)
+        kafkaTemplate.send(orderEventsTopic, String.valueOf(orderId), event)
                 .whenComplete((result, ex) -> {
                     if (ex != null) {
                         log.error("Could not publish {} for order {}", type, orderId, ex);

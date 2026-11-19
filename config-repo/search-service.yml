@@ -1,0 +1,18 @@
+spring:
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}
+    connection-timeout: 3s
+    socket-timeout: 10s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+    consumer:
+      group-id: search-service
+      # On a fresh environment the index is empty and the topic may already hold
+      # events, so start from the beginning instead of the latest offset.
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: hu.unimiskolc.shopstream.events
+    admin:
+      fail-fast: false

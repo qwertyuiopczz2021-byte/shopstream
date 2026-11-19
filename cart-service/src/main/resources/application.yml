@@ -4,23 +4,13 @@ server:
 spring:
   application:
     name: cart-service
-  data:
-    redis:
-      host: ${REDIS_HOST:redis}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
-      timeout: 2s
-      connect-timeout: 2s
-
-order:
-  service:
-    url: ${ORDER_SERVICE_URL:http://order-service:8080}
-
-# A checkout is not decided when POST /orders returns: the order is PENDING and
-# the stock answer arrives later on Kafka. We wait this long for that answer.
-checkout:
-  timeout-ms: ${CHECKOUT_TIMEOUT_MS:5000}
-  poll-interval-ms: ${CHECKOUT_POLL_INTERVAL_MS:250}
+  # Everything else - database, Kafka, Redis, Elasticsearch and the Kafka topic
+  # names - is served by config-server from the config-repo folder. "optional:"
+  # means the service still starts when the config server is unreachable instead
+  # of failing on startup; in this stack it is always there, because compose
+  # starts it before the services and gives it a health check.
+  config:
+    import: "optional:configserver:http://config-server:8888"
 
 management:
   endpoints:

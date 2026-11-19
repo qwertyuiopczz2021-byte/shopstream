@@ -1,0 +1,36 @@
+spring:
+  cloud:
+    gateway:
+      # Routes are matched top to bottom, so the four API routes come first and
+      # the catch-all for the storefront goes last.
+      routes:
+        - id: product-service
+          uri: lb://product-service
+          predicates:
+            - Path=/api/products,/api/products/**
+          filters:
+            - StripPrefix=1
+        - id: order-service
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders,/api/orders/**
+          filters:
+            - StripPrefix=1
+        - id: cart-service
+          uri: lb://cart-service
+          predicates:
+            - Path=/api/carts,/api/carts/**
+          filters:
+            - StripPrefix=1
+        - id: search-service
+          uri: lb://search-service
+          predicates:
+            - Path=/api/search,/api/search/**
+          filters:
+            - StripPrefix=1
+        # The storefront is an nginx container, not a Spring application, so it
+        # cannot register itself in Eureka; it is addressed by its compose name.
+        - id: frontend
+          uri: http://frontend:80
+          predicates:
+            - Path=/**

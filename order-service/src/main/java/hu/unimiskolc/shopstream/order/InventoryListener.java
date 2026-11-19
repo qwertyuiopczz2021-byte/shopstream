@@ -1,7 +1,6 @@
 package hu.unimiskolc.shopstream.order;
 
 import hu.unimiskolc.shopstream.events.InventoryEvent;
-import hu.unimiskolc.shopstream.events.Topics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -18,7 +17,7 @@ public class InventoryListener {
         this.orderService = orderService;
     }
 
-    @KafkaListener(topics = Topics.INVENTORY_EVENTS, groupId = "order-service")
+    @KafkaListener(topics = "${shopstream.topics.inventory-events}", groupId = "order-service")
     public void onInventoryEvent(InventoryEvent event) {
         log.info("{} received: order={} reason={}", event.status(), event.orderId(), event.reason());
         orderService.applyInventoryResult(event);

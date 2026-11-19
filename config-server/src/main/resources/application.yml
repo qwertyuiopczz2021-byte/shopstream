@@ -1,0 +1,33 @@
+server:
+  port: 8888
+
+spring:
+  application:
+    name: config-server
+  profiles:
+    # "native" means: serve the files from the filesystem instead of a Git
+    # repository. The folder is mounted from ./config-repo by docker-compose.yml,
+    # so the configuration is versioned in this repository like the code is.
+    active: native
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: file:/config-repo
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_DEFAULT_ZONE:http://discovery-server:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true

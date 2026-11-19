@@ -4,23 +4,13 @@ server:
 spring:
   application:
     name: search-service
-  elasticsearch:
-    uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}
-    connection-timeout: 3s
-    socket-timeout: 10s
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
-    consumer:
-      group-id: search-service
-      # On a fresh environment the index is empty and the topic may already hold
-      # events, so start from the beginning instead of the latest offset.
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      properties:
-        spring.json.trusted.packages: hu.unimiskolc.shopstream.events
-    admin:
-      fail-fast: false
+  # Everything else - database, Kafka, Redis, Elasticsearch and the Kafka topic
+  # names - is served by config-server from the config-repo folder. "optional:"
+  # means the service still starts when the config server is unreachable instead
+  # of failing on startup; in this stack it is always there, because compose
+  # starts it before the services and gives it a health check.
+  config:
+    import: "optional:configserver:http://config-server:8888"
 
 management:
   endpoints:

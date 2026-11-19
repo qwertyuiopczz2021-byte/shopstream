@@ -1,12 +1,10 @@
 spring:
   application:
     name: notification-service
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
-    consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      properties:
-        spring.json.trusted.packages: hu.unimiskolc.shopstream.events
-    admin:
-      fail-fast: false
+  # Everything else - database, Kafka, Redis, Elasticsearch and the Kafka topic
+  # names - is served by config-server from the config-repo folder. "optional:"
+  # means the service still starts when the config server is unreachable instead
+  # of failing on startup; in this stack it is always there, because compose
+  # starts it before the services and gives it a health check.
+  config:
+    import: "optional:configserver:http://config-server:8888"

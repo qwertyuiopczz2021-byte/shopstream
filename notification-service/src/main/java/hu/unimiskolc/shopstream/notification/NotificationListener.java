@@ -4,7 +4,6 @@ import hu.unimiskolc.shopstream.events.InventoryEvent;
 import hu.unimiskolc.shopstream.events.OrderConfirmed;
 import hu.unimiskolc.shopstream.events.OrderPlaced;
 import hu.unimiskolc.shopstream.events.OrderRejected;
-import hu.unimiskolc.shopstream.events.Topics;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,7 +44,7 @@ public class NotificationListener {
      * record and switches on its value; the JSON type header decides which of the
      * three records arrives.
      */
-    @KafkaListener(topics = Topics.ORDER_EVENTS, groupId = "notification-service")
+    @KafkaListener(topics = "${shopstream.topics.order-events}", groupId = "notification-service")
     public void onOrderEvent(ConsumerRecord<String, Object> record) {
         switch (record.value()) {
             case OrderPlaced placed -> {
@@ -59,7 +58,7 @@ public class NotificationListener {
         }
     }
 
-    @KafkaListener(topics = Topics.INVENTORY_EVENTS, groupId = "notification-service")
+    @KafkaListener(topics = "${shopstream.topics.inventory-events}", groupId = "notification-service")
     public void onInventoryEvent(InventoryEvent event) {
         log.info("Stock decision for order {}: {}{}", event.orderId(), event.status(),
                 event.reason() == null ? "" : " (" + event.reason() + ")");

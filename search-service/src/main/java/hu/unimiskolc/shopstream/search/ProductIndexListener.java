@@ -3,7 +3,6 @@ package hu.unimiskolc.shopstream.search;
 import hu.unimiskolc.shopstream.events.ProductCreated;
 import hu.unimiskolc.shopstream.events.ProductDeleted;
 import hu.unimiskolc.shopstream.events.ProductUpdated;
-import hu.unimiskolc.shopstream.events.Topics;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,7 +25,7 @@ public class ProductIndexListener {
         this.repository = repository;
     }
 
-    @KafkaListener(topics = Topics.PRODUCT_EVENTS, groupId = "search-service")
+    @KafkaListener(topics = "${shopstream.topics.product-events}", groupId = "search-service")
     public void onProductEvent(ConsumerRecord<String, Object> record) {
         Object event = record.value();
         if (event instanceof ProductCreated created) {

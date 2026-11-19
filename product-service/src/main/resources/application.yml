@@ -4,34 +4,13 @@ server:
 spring:
   application:
     name: product-service
-  datasource:
-    url: ${DB_URL:jdbc:mysql://mysql-product:3306/products?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
-    username: ${DB_USER:shop}
-    password: ${DB_PASSWORD:shoppw}
-  jpa:
-    hibernate:
-      ddl-auto: update
-    open-in-view: false
-  data:
-    redis:
-      host: ${REDIS_HOST:redis}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
-      timeout: 2s
-  cache:
-    type: redis
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-    consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      properties:
-        spring.json.trusted.packages: hu.unimiskolc.shopstream.events
-    admin:
-      fail-fast: false
+  # Everything else - database, Kafka, Redis, Elasticsearch and the Kafka topic
+  # names - is served by config-server from the config-repo folder. "optional:"
+  # means the service still starts when the config server is unreachable instead
+  # of failing on startup; in this stack it is always there, because compose
+  # starts it before the services and gives it a health check.
+  config:
+    import: "optional:configserver:http://config-server:8888"
 
 management:
   endpoints:

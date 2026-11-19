@@ -1,0 +1,14 @@
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      connect-timeout: 2s
+
+# A checkout is not decided when POST /orders returns: the order is PENDING and
+# the stock answer arrives later on Kafka. We wait this long for that answer.
+checkout:
+  timeout-ms: ${CHECKOUT_TIMEOUT_MS:5000}
+  poll-interval-ms: ${CHECKOUT_POLL_INTERVAL_MS:250}

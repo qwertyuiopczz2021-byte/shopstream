@@ -1,7 +1,7 @@
 package hu.unimiskolc.shopstream.product.config;
 
-import hu.unimiskolc.shopstream.events.Topics;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
@@ -11,25 +11,44 @@ import org.springframework.kafka.config.TopicBuilder;
  * them on startup if they do not exist; the broker itself is configured with
  * automatic topic creation turned off, so the partition count is always ours and
  * never the broker default of one.
+ *
+ * <p>The names and the partition count are no longer constants in Java: they are
+ * read from config-server (see config-repo/application.yml under
+ * shopstream.topics), so renaming a topic is a configuration change.</p>
  */
 @Configuration
 public class KafkaTopicConfig {
 
-    private static final int PARTITIONS = 3;
-    private static final int REPLICAS = 1;
+    private final String orderEvents;
+    private final String inventoryEvents;
+    private final String productEvents;
+    private final int partitions;
+    private final int replicas;
 
-    @Bean
-    NewTopic orderEvents() {
-        return TopicBuilder.name(Topics.ORDER_EVENTS).partitions(PARTITIONS).replicas(REPLICAS).build();
+    public KafkaTopicConfig(@Value("${shopstream.topics.order-events}") String orderEvents,
+                            @Value("${shopstream.topics.inventory-events}") String inventoryEvents,
+                            @Value("${shopstream.topics.product-events}") String productEvents,
+                            @Value("${shopstream.topics.partitions}") int partitions,
+                            @Value("${shopstream.topics.replicas}") int replicas) {
+        this.orderEvents = orderEvents;
+        this.inventoryEvents = inventoryEvents;
+        this.productEvents = productEvents;
+        this.partitions = partitions;
+        this.replicas = replicas;
     }
 
     @Bean
-    NewTopic inventoryEvents() {
-        return TopicBuilder.name(Topics.INVENTORY_EVENTS).partitions(PARTITIONS).replicas(REPLICAS).build();
+    NewTopic orderEventsTopic() {
+        return TopicBuilder.name(orderEvents).partitions(partitions).replicas(replicas).build();
     }
 
     @Bean
-    NewTopic productEvents() {
-        return TopicBuilder.name(Topics.PRODUCT_EVENTS).partitions(PARTITIONS).replicas(REPLICAS).build();
+    NewTopic inventoryEventsTopic() {
+        return TopicBuilder.name(inventoryEvents).partitions(partitions).replicas(replicas).build();
+    }
+
+    @Bean
+    NewTopic productEventsTopic() {
+        return TopicBuilder.name(productEvents).partitions(partitions).replicas(replicas).build();
     }
 }

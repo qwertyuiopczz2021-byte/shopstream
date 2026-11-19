@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------------------
+# Shared by every service that reads this server.
+# The file name without a suffix is applied to all applications; a file called
+# product-service.yml is applied only to the service with that
+# spring.application.name. Anything a service sets in its own application.yml
+# still wins, so this file is for defaults that must be identical everywhere.
+# ---------------------------------------------------------------------------
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_DEFAULT_ZONE:http://discovery-server:8761/eureka/}
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    # The containers talk to each other over the compose network, so the IP the
+    # container got from Docker is exactly the address that is reachable.
+    prefer-ip-address: true
+
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connect-timeout: 2000
+            read-timeout: 5000
+
+# The Kafka topic names live here and nowhere else now: the services read them
+# with ${shopstream.topics.*} placeholders, so renaming a topic is a change to
+# this file instead of a recompile of four Java classes.
+shopstream:
+  topics:
+    order-events: ${TOPIC_ORDER_EVENTS:order-events}
+    inventory-events: ${TOPIC_INVENTORY_EVENTS:inventory-events}
+    product-events: ${TOPIC_PRODUCT_EVENTS:product-events}
+    partitions: ${TOPIC_PARTITIONS:3}
+    replicas: ${TOPIC_REPLICAS:1}

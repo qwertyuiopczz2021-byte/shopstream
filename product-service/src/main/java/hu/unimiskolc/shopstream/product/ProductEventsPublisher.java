@@ -3,9 +3,9 @@ package hu.unimiskolc.shopstream.product;
 import hu.unimiskolc.shopstream.events.ProductCreated;
 import hu.unimiskolc.shopstream.events.ProductDeleted;
 import hu.unimiskolc.shopstream.events.ProductUpdated;
-import hu.unimiskolc.shopstream.events.Topics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
@@ -21,9 +21,12 @@ public class ProductEventsPublisher {
     private static final Logger log = LoggerFactory.getLogger(ProductEventsPublisher.class);
 
     private final KafkaTemplate<Object, Object> kafkaTemplate;
+    private final String productEventsTopic;
 
-    public ProductEventsPublisher(KafkaTemplate<Object, Object> kafkaTemplate) {
+    public ProductEventsPublisher(KafkaTemplate<Object, Object> kafkaTemplate,
+                                 @Value("${shopstream.topics.product-events}") String productEventsTopic) {
         this.kafkaTemplate = kafkaTemplate;
+        this.productEventsTopic = productEventsTopic;
     }
 
     public void created(Product product) {
@@ -47,7 +50,7 @@ public class ProductEventsPublisher {
             case ProductDeleted deleted -> deleted.productId();
             default -> throw new IllegalArgumentException("Not a product event: " + event);
         };
-        kafkaTemplate.send(Topics.PRODUCT_EVENTS, String.valueOf(productId), event);
+        kafkaTemplate.send(productEventsTopic, String.valueOf(productId), event);
         log.info("{} published for product {}", event.getClass().getSimpleName(), productId);
     }
 }
