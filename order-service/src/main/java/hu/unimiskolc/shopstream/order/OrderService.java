@@ -20,10 +20,10 @@ public class OrderService {
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     private final OrderRepository repository;
-    private final ProductClient productClient;
+    private final ProductFeignClient productClient;
     private final ApplicationEventPublisher events;
 
-    public OrderService(OrderRepository repository, ProductClient productClient, ApplicationEventPublisher events) {
+    public OrderService(OrderRepository repository, ProductFeignClient productClient, ApplicationEventPublisher events) {
         this.repository = repository;
         this.productClient = productClient;
         this.events = events;

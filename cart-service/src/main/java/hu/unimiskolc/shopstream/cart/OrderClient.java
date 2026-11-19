@@ -1,47 +1,33 @@
 package hu.unimiskolc.shopstream.cart;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
-import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestClient;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 
 import java.util.List;
-import java.util.Map;
 
 /**
- * The only thing cart-service knows about order-service is its URL and two
- * endpoints. Step 5 replaces this class with a {@code @FeignClient} that
- * resolves the host through Eureka; until then the address comes from an
- * environment variable like every other address in the project.
+ * Declarative HTTP client for order-service, found through Eureka by name.
+ *
+ * <p>Step 4 used a RestClient whose base URL came from ORDER_SERVICE_URL. The
+ * interface below is what replaced it: two method signatures that mirror the two
+ * endpoints, no address anywhere.</p>
  */
-@Component
-public class OrderClient {
+@FeignClient(name = "order-service", path = "/orders")
+public interface OrderClient {
 
-    private final RestClient restClient;
+    @PostMapping
+    OrderView placeOrder(@RequestBody OrderRequest request);
 
-    public OrderClient(@Value("${order.service.url}") String baseUrl) {
-        this.restClient = RestClient.builder().baseUrl(baseUrl).build();
-    }
+    @GetMapping("/{id}")
+    OrderView getOrder(@PathVariable("id") Long orderId);
 
-    public OrderView placeOrder(List<CartItem> items) {
-        List<Map<String, Object>> lines = items.stream()
-                .map(item -> Map.<String, Object>of(
-                        "productId", item.getProductId(),
-                        "quantity", item.getQuantity()))
-                .toList();
-
-        return restClient.post()
-                .uri("/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(Map.of("items", lines))
-                .retrieve()
-                .body(OrderView.class);
-    }
-
-    public OrderView getOrder(Long orderId) {
-        return restClient.get()
-                .uri("/orders/{id}", orderId)
-                .retrieve()
-                .body(OrderView.class);
+    /** Convenience overload so the checkout code does not build the body itself. */
+    default OrderView placeOrder(List<CartItem> items) {
+        return placeOrder(new OrderRequest(items.stream()
+                .map(item -> new OrderRequest.Line(item.getProductId(), item.getQuantity()))
+                .toList()));
     }
 }
