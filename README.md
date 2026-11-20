@@ -16,6 +16,21 @@ Open **<http://localhost:8080>** after `docker compose up`: that is the whole sy
 browse the catalogue, add to the cart, check out and watch the order come back `CONFIRMED`.
 The page is bilingual (English / 中文, button in the top right corner, or `?lang=zh` in the URL).
 
+## Report
+
+`docs/report/ShopStream-Report.pdf` is the written report (60 pages). It walks through the five steps,
+naming the classes, annotations and configuration each one uses and explaining the decision behind them,
+and it shows the running system in the recorded terminal output and browser screenshots that back every
+claim in the verification chapter. The PDF is generated, not typed:
+
+```bash
+python -m pip install reportlab pymupdf
+python docs/report/build.py        # writes docs/report/ShopStream-Report.pdf
+```
+
+Every code listing in it is read out of this repository at the line numbers printed in the caption, so the
+report and the code cannot drift apart silently.
+
 ## Services
 
 Only **one** port is published to the host: `8080`, the gateway. Everything else lives on the compose
